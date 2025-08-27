@@ -11,7 +11,8 @@ chmod +x install-supabase.sh
 
 # Run as root
 sudo ./install-supabase.sh
-Requirements
+
+# Requirements:
 
 Ubuntu 22.04+ or Debian 11+
 Domain pointing to your server
