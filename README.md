@@ -16,8 +16,6 @@ sudo ./install-supabase.sh
 
 Ubuntu 22.04+ or Debian 11+
 Domain pointing to your server
-Root access
-Ports 80, 443 open
 
 After Installation
 
