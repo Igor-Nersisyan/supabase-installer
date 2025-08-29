@@ -1,6 +1,6 @@
 #!/bin/bash
-# Supabase Self-Hosted Production Installer v3.1
-# With all fixes including main function for public endpoints
+# Supabase Self-Hosted Production Installer v3.2
+# With firewall configuration
 
 set -e
 
@@ -10,7 +10,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}  Supabase Self-Hosted Installer v3.1${NC}"
+echo -e "${GREEN}  Supabase Self-Hosted Installer v3.2${NC}"
 echo -e "${GREEN}========================================${NC}\n"
 
 if [ "$EUID" -ne 0 ]; then 
@@ -40,7 +40,7 @@ done
 # Install packages
 echo -e "${YELLOW}Installing required packages...${NC}"
 apt-get update -qq
-apt-get install -y docker.io docker-compose git nginx certbot python3-certbot-nginx wget curl nano -qq
+apt-get install -y docker.io docker-compose git nginx certbot python3-certbot-nginx wget curl nano ufw -qq
 
 # Install docker compose v2
 if ! command -v docker compose &> /dev/null; then
@@ -48,6 +48,19 @@ if ! command -v docker compose &> /dev/null; then
     curl -SL https://github.com/docker/compose/releases/download/v2.20.0/docker-compose-linux-x86_64 -o /usr/local/bin/docker-compose
     chmod +x /usr/local/bin/docker-compose
 fi
+
+# Configure firewall
+echo -e "${YELLOW}Configuring firewall...${NC}"
+ufw --force disable 2>/dev/null || true
+ufw --force reset 2>/dev/null || true
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow 22/tcp comment 'SSH'
+ufw allow 80/tcp comment 'HTTP for SSL cert'
+ufw allow 443/tcp comment 'HTTPS'
+ufw allow 5432/tcp comment 'PostgreSQL'
+ufw --force enable
+echo -e "${GREEN}Firewall configured with ports: 22, 80, 443, 5432${NC}"
 
 # Clone Supabase
 echo -e "${YELLOW}Setting up Supabase directory...${NC}"
@@ -66,7 +79,6 @@ sed -i 's/: false/: "false"/g' docker-compose.yml
 
 # Install Node.js and npm from Ubuntu repositories
 echo -e "${YELLOW}Installing Node.js and npm...${NC}"
-# Wait for apt locks again before Node.js installation
 while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
     echo -e "${YELLOW}Waiting for package manager...${NC}"
     sleep 3
@@ -716,6 +728,10 @@ WebSocket Test:
   const ws = new WebSocket('wss://$DOMAIN/realtime/v1/websocket?apikey=$ANON_KEY&vsn=1.0.0');
   ws.onopen = () => console.log('Realtime connected!');
 
+Firewall Status:
+  Enabled with ports: 22, 80, 443, 5432
+  Check status: sudo ufw status
+
 ========================================
 IMPORTANT: AFTER CONFIGURING WEBHOOKS
 ========================================
@@ -730,6 +746,14 @@ IMPORTANT: AFTER CONFIGURING WEBHOOKS
 3. Restart containers to apply changes:
    cd /opt/supabase-project
    docker-compose down && docker-compose up -d
+
+========================================
+IMPORTANT: EXISTING APPLICATIONS
+========================================
+
+If you have existing applications connected to Supabase:
+- Update API keys in your applications
+- Republish/redeploy your applications
 
 ========================================
 QUICK RESTART COMMANDS
@@ -756,6 +780,9 @@ echo -e "${GREEN}========================================${NC}"
 echo ""
 echo -e "${YELLOW}Credentials saved to: /root/supabase-credentials.txt${NC}"
 echo ""
+echo -e "${GREEN}Firewall enabled with ports: 22, 80, 443, 5432${NC}"
+echo -e "${YELLOW}Check firewall status: sudo ufw status${NC}"
+echo ""
 echo -e "${RED}========================================${NC}"
 echo -e "${RED}IMPORTANT: CONFIGURE YOUR WEBHOOKS NOW${NC}"
 echo -e "${RED}========================================${NC}"
@@ -776,20 +803,4 @@ echo "   curl -X POST https://$DOMAIN/functions/v1/n8n-proxy \\"
 echo "     -H \"Content-Type: application/json\" \\"
 echo "     -H \"X-Session-ID: test-123\" \\"
 echo "     -d '{\"test\": \"data\"}'"
-echo ""
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}QUICK COMMANDS FOR LATER:${NC}"
-echo -e "${GREEN}========================================${NC}"
-echo ""
-echo "# Quick restart after .env changes:"
-echo "cd /opt/supabase-project && docker-compose down && docker-compose up -d"
-echo ""
-echo "# Check if variables loaded:"
-echo "docker exec supabase-edge-functions env | grep N8N"
-echo ""
-echo "# View logs:"
-echo "docker logs supabase-edge-functions --tail 50"
-echo ""
-echo "# Test WebSocket:"
-echo "wscat -c \"wss://$DOMAIN/realtime/v1/websocket?apikey=$ANON_KEY&vsn=1.0.0\""
 echo ""
