@@ -45,8 +45,6 @@ bashcat /root/supabase-credentials.txt
 Access Points
 
 Studio: https://YOUR-DOMAIN/studio
-API: https://YOUR-DOMAIN
-Database: YOUR-DOMAIN:5432
 
 Edge Functions
 
