@@ -1,6 +1,6 @@
 #!/bin/bash
-# Supabase Self-Hosted Production Installer v3.2
-# With firewall configuration and all fixes
+# Supabase Self-Hosted Production Installer v3.2 - Fixed
+# With Docker detection and firewall configuration
 
 set -e
 
@@ -11,6 +11,7 @@ NC='\033[0m'
 
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  Supabase Self-Hosted Installer v3.2${NC}"
+echo -e "${GREEN}      (Fixed for existing Docker)${NC}"
 echo -e "${GREEN}========================================${NC}\n"
 
 if [ "$EUID" -ne 0 ]; then 
@@ -37,16 +38,53 @@ while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/apt/li
    sleep 5
 done
 
-# Install packages
-echo -e "${YELLOW}Installing required packages...${NC}"
+# Install packages with smart Docker detection
+echo -e "${YELLOW}Checking installed packages...${NC}"
 apt-get update -qq
-apt-get install -y docker.io docker-compose git nginx certbot python3-certbot-nginx wget curl nano ufw python3-yaml -qq
 
-# Install docker compose v2
-if ! command -v docker compose &> /dev/null; then
-   echo -e "${YELLOW}Installing docker compose v2...${NC}"
-   curl -SL https://github.com/docker/compose/releases/download/v2.20.0/docker-compose-linux-x86_64 -o /usr/local/bin/docker-compose
-   chmod +x /usr/local/bin/docker-compose
+# Check if Docker is already installed
+if ! command -v docker &> /dev/null; then
+    echo -e "${YELLOW}Installing Docker...${NC}"
+    apt-get install -y docker.io -qq
+else
+    echo -e "${GREEN}✓ Docker already installed ($(docker --version))${NC}"
+fi
+
+# Check if docker-compose is already installed
+if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
+    echo -e "${YELLOW}Installing Docker Compose...${NC}"
+    apt-get install -y docker-compose -qq
+else
+    echo -e "${GREEN}✓ Docker Compose already installed${NC}"
+fi
+
+# Install other required packages
+echo -e "${YELLOW}Installing other required packages...${NC}"
+PACKAGES_TO_INSTALL=""
+
+# Check each package and add to install list if not present
+for pkg in git nginx certbot python3-certbot-nginx wget curl nano ufw python3-yaml; do
+    if ! dpkg -l | grep -q "^ii  $pkg "; then
+        PACKAGES_TO_INSTALL="$PACKAGES_TO_INSTALL $pkg"
+    else
+        echo -e "${GREEN}✓ $pkg already installed${NC}"
+    fi
+done
+
+if [ ! -z "$PACKAGES_TO_INSTALL" ]; then
+    echo -e "${YELLOW}Installing:$PACKAGES_TO_INSTALL${NC}"
+    apt-get install -y $PACKAGES_TO_INSTALL -qq
+fi
+
+# Install docker compose v2 if needed
+if ! docker compose version &> /dev/null 2>&1; then
+   echo -e "${YELLOW}Installing Docker Compose v2 plugin...${NC}"
+   mkdir -p /usr/local/lib/docker/cli-plugins/
+   curl -SL https://github.com/docker/compose/releases/download/v2.20.0/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose
+   chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+   echo -e "${GREEN}✓ Docker Compose v2 plugin installed${NC}"
+else
+   echo -e "${GREEN}✓ Docker Compose v2 already available${NC}"
 fi
 
 # Configure firewall
@@ -80,32 +118,36 @@ cp -r supabase/docker/* supabase-project/
 cp supabase/docker/.env.example supabase-project/.env
 cd supabase-project
 
-# Fix docker-compose.yml for older versions
+# Fix docker-compose.yml for compatibility
 sed -i '/^name:/d' docker-compose.yml 2>/dev/null || true
 sed -i 's/: true/: "true"/g' docker-compose.yml
 sed -i 's/: false/: "false"/g' docker-compose.yml
 
-# Install Node.js and npm from Ubuntu repositories
-echo -e "${YELLOW}Installing Node.js and npm...${NC}"
-while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
-   echo -e "${YELLOW}Waiting for package manager...${NC}"
-   sleep 3
-done
-apt-get update
-apt-get install -y nodejs npm
+# Install Node.js and npm if not present
+if ! command -v node &> /dev/null; then
+    echo -e "${YELLOW}Installing Node.js and npm...${NC}"
+    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+       echo -e "${YELLOW}Waiting for package manager...${NC}"
+       sleep 3
+    done
+    apt-get update
+    apt-get install -y nodejs npm
+else
+    echo -e "${GREEN}✓ Node.js already installed ($(node --version))${NC}"
+fi
 
 # Generate JWT keys
 echo -e "${YELLOW}Generating JWT keys...${NC}"
-cat > /tmp/generate-jwt.js << EOF
+cat > /tmp/generate-jwt.js << 'EOF'
 const crypto = require('crypto');
-const JWT_SECRET = '$JWT_SECRET';
+const JWT_SECRET = process.argv[2];
 
 function signJWT(payload, secret) {
    const header = { alg: 'HS256', typ: 'JWT' };
    const encodedHeader = Buffer.from(JSON.stringify(header)).toString('base64url');
    const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
-   const signature = crypto.createHmac('sha256', secret).update(\`\${encodedHeader}.\${encodedPayload}\`).digest('base64url');
-   return \`\${encodedHeader}.\${encodedPayload}.\${signature}\`;
+   const signature = crypto.createHmac('sha256', secret).update(`${encodedHeader}.${encodedPayload}`).digest('base64url');
+   return `${encodedHeader}.${encodedPayload}.${signature}`;
 }
 
 const now = Math.floor(Date.now() / 1000);
@@ -118,7 +160,7 @@ console.log('ANON_KEY=' + signJWT(anonPayload, JWT_SECRET));
 console.log('SERVICE_ROLE_KEY=' + signJWT(servicePayload, JWT_SECRET));
 EOF
 
-KEYS=$(node /tmp/generate-jwt.js)
+KEYS=$(node /tmp/generate-jwt.js "$JWT_SECRET")
 ANON_KEY=$(echo "$KEYS" | grep ANON_KEY | cut -d'=' -f2)
 SERVICE_ROLE_KEY=$(echo "$KEYS" | grep SERVICE_ROLE_KEY | cut -d'=' -f2)
 rm /tmp/generate-jwt.js
@@ -687,7 +729,12 @@ systemctl reload nginx
 
 # Start Docker containers
 echo -e "${YELLOW}Starting Docker containers...${NC}"
-docker-compose up -d
+# Use docker compose v2 if available, otherwise docker-compose
+if docker compose version &> /dev/null 2>&1; then
+    docker compose up -d
+else
+    docker-compose up -d
+fi
 
 echo -e "${YELLOW}Waiting for services to start (60 seconds)...${NC}"
 sleep 60
