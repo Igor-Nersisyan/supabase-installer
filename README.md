@@ -1,6 +1,6 @@
 # Supabase Self-Hosted Production Installer
 
-🚀 **Complete production-ready Supabase installation with critical fixes for edge functions and timeouts**
+🚀 **Complete production-ready Supabase installation**
 
 [![Version](https://img.shields.io/badge/version-3.8-blue.svg)](https://github.com/Igor-Nersisyan/supabase-installer)
 [![Ubuntu](https://img.shields.io/badge/Ubuntu-20.04%20|%2022.04%20|%2024.04-orange.svg)](https://ubuntu.com/)
@@ -9,13 +9,6 @@
 ## 🎯 What is this?
 
 A battle-tested installer that deploys self-hosted Supabase with enterprise features and critical production fixes. Solves common issues like Edge Functions DNS failures and Kong 60-second timeout limits.
-
-## ⚡ Key Problems Solved
-
-- ✅ **Edge Functions DNS fix** - Functions stay stable after container restarts
-- ✅ **Kong 5-minute timeout** - No more 60-second cutoffs for AI workflows
-- ✅ **Automatic log rotation** - Prevents disk space issues
-- ✅ **Pooler connection fix** - Uses 'postgres' tenant ID for compatibility
 
 ## ✨ Features
 
@@ -321,25 +314,6 @@ docker compose up -d
 wget https://raw.githubusercontent.com/Igor-Nersisyan/supabase-installer/main/install-supabase.sh -O install-supabase-new.sh
 # Review changes before using
 ```
-
-## 📝 Version History
-
-### v3.8 (2025-09-18) - Production Ready
-- Added automatic log rotation system
-- Improved installation process
-- Better error handling
-- Complete documentation
-
-### v3.7 (2025-09-15) - Critical Fixes
-- Fixed Kong 60-second timeout issue
-- Edge Functions now support 5-minute requests
-- Added DNS configuration for Docker
-- Fixed Edge Functions stability after restarts
-
-### v3.5 (2025-09-10)
-- Initial working version
-- Basic Supabase installation
-- SSL certificate setup
 
 ## 🏗️ Architecture
 
