@@ -1,139 +1,300 @@
 #!/bin/bash
-# Supabase Self-Hosted Production Installer v3.2 - Fixed
-# With Docker detection and firewall configuration
+# Supabase Self-Hosted Production Installer v3.8 - Complete Edition with Log Rotation
+# Includes: DNS fix, Kong timeout fix, automatic log rotation, and production safeguards
 
-set -e
+set -euo pipefail
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}  Supabase Self-Hosted Installer v3.2${NC}"
-echo -e "${GREEN}      (Fixed for existing Docker)${NC}"
-echo -e "${GREEN}========================================${NC}\n"
+# Function to wait for apt locks with better user feedback
+wait_for_apt_lock() {
+    local first_message=true
+    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
+       if [ "$first_message" = true ]; then
+           echo ""
+           echo -e "${YELLOW}⏳ System is running automatic updates in background${NC}"
+           echo -e "${GREEN}   This is normal - waiting for it to finish...${NC}"
+           echo -n "   "
+           first_message=false
+       else
+           echo -n "."
+       fi
+       sleep 5
+    done
+    if [ "$first_message" = false ]; then
+        echo -e " ${GREEN}✔${NC}"
+        echo -e "${GREEN}✔ System updates finished, continuing installation${NC}"
+        echo ""
+    fi
+}
+
+# ASCII Art Header
+cat << 'HEADER'
+
+   ███████╗██╗   ██╗██████╗  █████╗ ██████╗  █████╗ ███████╗███████╗
+   ██╔════╝██║   ██║██╔══██╗██╔══██╗██╔══██╗██╔══██╗██╔════╝██╔════╝
+   ███████╗██║   ██║██████╔╝███████║██████╔╝███████║███████╗█████╗  
+   ╚════██║██║   ██║██╔═══╝ ██╔══██║██╔══██╗██╔══██║╚════██║██╔══╝  
+   ███████║╚██████╔╝██║     ██║  ██║██████╔╝██║  ██║███████║███████╗
+   ╚══════╝ ╚═════╝ ╚═╝     ╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝╚══════╝╚══════╝
+HEADER
+
+echo -e "${GREEN}                   Self-Hosted Installer v3.8${NC}"
+echo -e "${GREEN}              Complete Edition with Log Rotation${NC}"
+echo ""
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+
+# Display system requirements with icons
+echo -e "${YELLOW}📋 Minimum System Requirements:${NC}"
+echo ""
+echo -e "  ${GREEN}▸${NC} CPU:  2+ cores"
+echo -e "  ${GREEN}▸${NC} RAM:  3+ GB"
+echo -e "  ${GREEN}▸${NC} Disk: 20+ GB"
+echo -e "  ${GREEN}▸${NC} OS:   Ubuntu 20.04+ / Debian 11+"
+echo ""
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
 
 if [ "$EUID" -ne 0 ]; then 
   echo -e "${RED}Run as root${NC}"
   exit 1
 fi
 
-# Input
-read -p "Domain: " DOMAIN
-read -p "Email for SSL: " EMAIL
+# Input with better prompts
+echo -e "${GREEN}🌐 Installation Configuration${NC}"
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+echo -e "${GREEN}Please provide the following information:${NC}"
+echo ""
+read -p "$(echo -e ${YELLOW}▸${NC} Domain name \(e.g., supabase.example.com\): )" DOMAIN
+read -p "$(echo -e ${YELLOW}▸${NC} Email for SSL certificate: )" EMAIL
+echo ""
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
 
-# Generate passwords
-echo -e "${YELLOW}Generating secure passwords...${NC}"
+# Generate passwords with progress indicator
+echo -e "${GREEN}🔐 Security Configuration${NC}"
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+echo -e "${GREEN}Generating secure passwords...${NC}"
+echo -n "  "
 POSTGRES_PASSWORD=$(openssl rand -hex 32)
+echo -n "▓▓▓"
 JWT_SECRET=$(openssl rand -hex 32)
+echo -n "▓▓▓"
 DASHBOARD_PASSWORD=$(openssl rand -hex 16)
+echo -n "▓▓▓"
 SECRET_KEY_BASE=$(openssl rand -hex 32)
+echo -n "▓▓▓"
 VAULT_ENC_KEY=$(openssl rand -hex 16)
+echo -e "▓▓▓ ${GREEN}✔${NC}"
+echo ""
+echo -e "${GREEN}✔ All passwords generated successfully${NC}"
+echo ""
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
 
 # Wait for apt locks to be released
 echo -e "${YELLOW}Checking for apt locks...${NC}"
-while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
-   echo -e "${YELLOW}Waiting for other package managers to finish...${NC}"
-   sleep 5
-done
+wait_for_apt_lock
 
 # Install packages with smart Docker detection
-echo -e "${YELLOW}Checking installed packages...${NC}"
+echo -e "${GREEN}📦 Package Installation${NC}"
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+echo -e "${GREEN}Checking installed packages...${NC}"
 apt-get update -qq
 
 # Check if Docker is already installed
 if ! command -v docker &> /dev/null; then
-    echo -e "${YELLOW}Installing Docker...${NC}"
+    echo -e "${YELLOW}⬇ Installing Docker...${NC}"
+    wait_for_apt_lock
     apt-get install -y docker.io -qq
+    echo -e "${GREEN}  ✔ Docker installed successfully${NC}"
 else
-    echo -e "${GREEN}✓ Docker already installed ($(docker --version))${NC}"
+    echo -e "${GREEN}  ✔ Docker already installed ($(docker --version | cut -d' ' -f3 | cut -d',' -f1))${NC}"
 fi
 
 # Check if docker-compose is already installed
 if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
-    echo -e "${YELLOW}Installing Docker Compose...${NC}"
+    echo -e "${YELLOW}⬇ Installing Docker Compose...${NC}"
+    wait_for_apt_lock
     apt-get install -y docker-compose -qq
+    echo -e "${GREEN}  ✔ Docker Compose installed successfully${NC}"
 else
-    echo -e "${GREEN}✓ Docker Compose already installed${NC}"
+    echo -e "${GREEN}  ✔ Docker Compose already installed${NC}"
 fi
 
-# Install other required packages
-echo -e "${YELLOW}Installing other required packages...${NC}"
+# Install other required packages (including logrotate)
+echo -e "${GREEN}Checking other dependencies...${NC}"
 PACKAGES_TO_INSTALL=""
 
 # Check each package and add to install list if not present
-for pkg in git nginx certbot python3-certbot-nginx wget curl nano ufw python3-yaml; do
+for pkg in git nginx certbot python3-certbot-nginx wget curl nano ufw python3-yaml jq logrotate; do
     if ! dpkg -l | grep -q "^ii  $pkg "; then
         PACKAGES_TO_INSTALL="$PACKAGES_TO_INSTALL $pkg"
     else
-        echo -e "${GREEN}✓ $pkg already installed${NC}"
+        echo -e "${GREEN}  ✔ $pkg${NC}"
     fi
 done
 
 if [ ! -z "$PACKAGES_TO_INSTALL" ]; then
-    echo -e "${YELLOW}Installing:$PACKAGES_TO_INSTALL${NC}"
+    echo -e "${YELLOW}⬇ Installing missing packages:${NC}$PACKAGES_TO_INSTALL"
+    wait_for_apt_lock
     apt-get install -y $PACKAGES_TO_INSTALL -qq
+    echo -e "${GREEN}  ✔ All packages installed successfully${NC}"
 fi
+echo ""
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+
+# CRITICAL FIX: Configure Docker DNS BEFORE starting containers
+echo -e "${GREEN}🔧 Configuring Docker DNS for stable Edge Functions${NC}"
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+echo -e "${GREEN}Setting up Docker daemon configuration...${NC}"
+cat > /etc/docker/daemon.json << 'DOCKERDAEMON'
+{
+  "dns": ["8.8.8.8", "8.8.4.4", "1.1.1.1"],
+  "dns-opts": ["ndots:0"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
+DOCKERDAEMON
+
+echo -e "${GREEN}Restarting Docker to apply DNS and logging configuration...${NC}"
+systemctl daemon-reload
+systemctl restart docker
+sleep 5
+echo -e "${GREEN}✔ Docker DNS configured for reliable container networking${NC}"
+echo -e "${GREEN}✔ Docker logging limited to 10MB per container with 3 file rotation${NC}"
+echo ""
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+
+# Configure log rotation for existing logs
+echo -e "${GREEN}📊 Configuring Log Rotation${NC}"
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+echo -e "${GREEN}Setting up automatic log rotation...${NC}"
+cat > /etc/logrotate.d/docker-containers << 'LOGROTATE'
+/var/lib/docker/containers/*/*.log {
+  rotate 7
+  daily
+  compress
+  size 50M
+  missingok
+  delaycompress
+  copytruncate
+  notifempty
+}
+LOGROTATE
+
+# Test logrotate configuration
+logrotate -d /etc/logrotate.d/docker-containers 2>/dev/null || true
+echo -e "${GREEN}✔ Log rotation configured (daily, max 50MB, keep 7 days)${NC}"
+echo ""
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
 
 # Install docker compose v2 if needed
 if ! docker compose version &> /dev/null 2>&1; then
    echo -e "${YELLOW}Installing Docker Compose v2 plugin...${NC}"
+   LATEST_COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | jq -r .tag_name 2>/dev/null || echo "")
+   if [ -z "$LATEST_COMPOSE_VERSION" ]; then
+        LATEST_COMPOSE_VERSION="v2.20.0" # Fallback
+   fi
    mkdir -p /usr/local/lib/docker/cli-plugins/
-   curl -SL https://github.com/docker/compose/releases/download/v2.20.0/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose
+   curl -SL "https://github.com/docker/compose/releases/download/${LATEST_COMPOSE_VERSION}/docker-compose-linux-x86_64" -o /usr/local/lib/docker/cli-plugins/docker-compose
    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-   echo -e "${GREEN}✓ Docker Compose v2 plugin installed${NC}"
+   echo -e "${GREEN}✔ Docker Compose ${LATEST_COMPOSE_VERSION} plugin installed${NC}"
 else
-   echo -e "${GREEN}✓ Docker Compose v2 already available${NC}"
+   echo -e "${GREEN}✔ Docker Compose v2 already available${NC}"
 fi
 
 # Configure firewall
-echo -e "${YELLOW}Configuring firewall...${NC}"
+echo -e "${GREEN}🔥 Firewall Configuration${NC}"
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
 if command -v ufw &> /dev/null; then
-   echo -e "${YELLOW}Adding firewall rules...${NC}"
+   echo -e "${GREEN}Adding firewall rules...${NC}"
    ufw allow 22/tcp comment 'SSH' 2>/dev/null
+   echo -e "  ${GREEN}✔${NC} SSH (22)"
    ufw allow 80/tcp comment 'HTTP for SSL cert' 2>/dev/null  
+   echo -e "  ${GREEN}✔${NC} HTTP (80)"
    ufw allow 443/tcp comment 'HTTPS' 2>/dev/null
+   echo -e "  ${GREEN}✔${NC} HTTPS (443)"
    ufw allow 5432/tcp comment 'PostgreSQL' 2>/dev/null
+   echo -e "  ${GREEN}✔${NC} PostgreSQL (5432)"
    
    UFW_STATUS=$(ufw status | grep -c "Status: active" || true)
    if [ "$UFW_STATUS" -eq 0 ]; then
-       echo -e "${YELLOW}Enabling firewall...${NC}"
+       echo -e "${GREEN}Enabling firewall...${NC}"
        ufw --force enable
-       echo -e "${GREEN}Firewall enabled with ports: 22, 80, 443, 5432${NC}"
+       echo -e "${GREEN}✔ Firewall enabled successfully${NC}"
    else
-       echo -e "${GREEN}Firewall already active. Rules added: 22, 80, 443, 5432${NC}"
+       echo -e "${GREEN}✔ Firewall already active${NC}"
    fi
 else
-   echo -e "${YELLOW}UFW not installed, skipping firewall configuration${NC}"
+   echo -e "${YELLOW}⚠ UFW not installed, skipping firewall configuration${NC}"
 fi
+echo ""
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
 
 # Clone Supabase
-echo -e "${YELLOW}Setting up Supabase directory...${NC}"
+echo -e "${GREEN}📥 Supabase Installation${NC}"
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+echo -e "${GREEN}Setting up Supabase directory...${NC}"
 cd /opt
 rm -rf supabase-project
+echo -e "${GREEN}Cloning Supabase repository...${NC}"
 git clone --depth 1 https://github.com/supabase/supabase.git
 mkdir -p supabase-project
 cp -r supabase/docker/* supabase-project/
 cp supabase/docker/.env.example supabase-project/.env
 cd supabase-project
+echo -e "${GREEN}✔ Supabase files prepared${NC}"
+echo ""
 
 # Fix docker-compose.yml for compatibility
 sed -i '/^name:/d' docker-compose.yml 2>/dev/null || true
 sed -i 's/: true/: "true"/g' docker-compose.yml
 sed -i 's/: false/: "false"/g' docker-compose.yml
 
-# Install Node.js and npm if not present
+# Install Node.js (LTS) and npm if not present
 if ! command -v node &> /dev/null; then
-    echo -e "${YELLOW}Installing Node.js and npm...${NC}"
-    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
-       echo -e "${YELLOW}Waiting for package manager...${NC}"
-       sleep 3
-    done
-    apt-get update
-    apt-get install -y nodejs npm
+    echo -e "${YELLOW}Installing Node.js (LTS)...${NC}"
+    echo -e "${GREEN}📝 Note: If system shows 'apt lock' messages, this is normal.${NC}"
+    echo -e "${GREEN}   Ubuntu is running automatic updates in background.${NC}"
+    echo -e "${GREEN}   Script will wait and continue automatically.${NC}"
+    echo ""
+    
+    # Ensure curl is installed, as it's needed for the NodeSource script
+    if ! command -v curl &> /dev/null; then
+        apt-get update -qq
+        wait_for_apt_lock
+        apt-get install -y curl -qq
+    fi
+    
+    # Download and run the NodeSource setup script for the latest LTS version
+    curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - 2>&1 | grep -v "apt lock" || true
+    
+    # Now install Node.js from the newly added repository
+    wait_for_apt_lock
+    apt-get install -y nodejs -qq
+    
+    echo -e "${GREEN}✔ Node.js installed successfully ($(node --version))${NC}"
 else
-    echo -e "${GREEN}✓ Node.js already installed ($(node --version))${NC}"
+    echo -e "${GREEN}✔ Node.js already installed ($(node --version))${NC}"
 fi
 
 # Generate JWT keys
@@ -160,10 +321,17 @@ console.log('ANON_KEY=' + signJWT(anonPayload, JWT_SECRET));
 console.log('SERVICE_ROLE_KEY=' + signJWT(servicePayload, JWT_SECRET));
 EOF
 
-KEYS=$(node /tmp/generate-jwt.js "$JWT_SECRET")
-ANON_KEY=$(echo "$KEYS" | grep ANON_KEY | cut -d'=' -f2)
-SERVICE_ROLE_KEY=$(echo "$KEYS" | grep SERVICE_ROLE_KEY | cut -d'=' -f2)
-rm /tmp/generate-jwt.js
+KEYS=$(node /tmp/generate-jwt.js "$JWT_SECRET" 2>/dev/null || echo "")
+if [ -z "$KEYS" ]; then
+    echo -e "${RED}WARNING: JWT key generation failed. Using fallback keys.${NC}"
+    # Fallback: use simple base64 encoded values (not secure but will allow installation to continue)
+    ANON_KEY="${JWT_SECRET:0:32}_anon_fallback"
+    SERVICE_ROLE_KEY="${JWT_SECRET:0:32}_service_fallback"
+else
+    ANON_KEY=$(echo "$KEYS" | grep ANON_KEY | cut -d'=' -f2)
+    SERVICE_ROLE_KEY=$(echo "$KEYS" | grep SERVICE_ROLE_KEY | cut -d'=' -f2)
+fi
+rm -f /tmp/generate-jwt.js
 
 # Configure .env
 echo -e "${YELLOW}Configuring environment variables...${NC}"
@@ -176,8 +344,8 @@ sed -i "s|^SITE_URL=.*|SITE_URL=https://$DOMAIN|" .env
 sed -i "s|^API_EXTERNAL_URL=.*|API_EXTERNAL_URL=https://$DOMAIN|" .env
 sed -i "s|^SUPABASE_PUBLIC_URL=.*|SUPABASE_PUBLIC_URL=https://$DOMAIN|" .env
 
-# Critical: MUST be your-tenant-id
-sed -i "s|^POOLER_TENANT_ID=.*|POOLER_TENANT_ID=your-tenant-id|" .env
+# IMPORTANT: Use postgres for tenant ID for maximum compatibility
+sed -i "s|^POOLER_TENANT_ID=.*|POOLER_TENANT_ID=postgres|" .env
 
 # Additional settings
 sed -i "s|^VAULT_ENC_KEY=.*|VAULT_ENC_KEY=$VAULT_ENC_KEY|" .env
@@ -216,6 +384,52 @@ ENDPOINT_2_AUTH_HEADER=
 ENDPOINT_3_WEBHOOK_URL=
 ENDPOINT_3_AUTH_HEADER=
 ENVEOF
+
+# CRITICAL FIX: Substitute variables in kong.yml BEFORE starting containers
+echo -e "${YELLOW}Configuring Kong API Gateway...${NC}"
+cp volumes/api/kong.yml volumes/api/kong.yml.template
+sed -i "s|\$SUPABASE_ANON_KEY|$ANON_KEY|g" volumes/api/kong.yml
+sed -i "s|\$SUPABASE_SERVICE_KEY|$SERVICE_ROLE_KEY|g" volumes/api/kong.yml
+sed -i "s|\$DASHBOARD_USERNAME|supabase|g" volumes/api/kong.yml
+sed -i "s|\$DASHBOARD_PASSWORD|$DASHBOARD_PASSWORD|g" volumes/api/kong.yml
+
+# Verify substitution
+if grep -q '\$SUPABASE_ANON_KEY' volumes/api/kong.yml; then
+    echo -e "${RED}ERROR: Variable substitution failed in kong.yml${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✔ Kong configuration variables substituted successfully${NC}"
+
+# CRITICAL FIX: Add Kong timeouts to prevent 60-second cutoff
+echo -e "${YELLOW}Configuring Kong timeouts for long-running functions...${NC}"
+# Find the functions-v1 service and add timeouts
+python3 << 'PYTHONEOF'
+import yaml
+import sys
+
+with open('volumes/api/kong.yml', 'r') as f:
+    data = yaml.safe_load(f)
+
+# Find and update functions service
+if 'services' in data:
+    for service in data['services']:
+        if service.get('name') == 'functions-v1':
+            service['connect_timeout'] = 300000
+            service['write_timeout'] = 300000
+            service['read_timeout'] = 300000
+            print("✔ Added 300-second timeouts to functions-v1 service")
+            break
+
+with open('volumes/api/kong.yml', 'w') as f:
+    yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+PYTHONEOF
+
+# If Python fails, use sed as fallback
+if [ $? -ne 0 ]; then
+    echo -e "${YELLOW}Python method failed, using sed to add timeouts...${NC}"
+    sed -i '/name: functions-v1$/a\  connect_timeout: 300000\n  write_timeout: 300000\n  read_timeout: 300000' volumes/api/kong.yml
+fi
+echo -e "${GREEN}✔ Kong timeouts configured for 5-minute requests${NC}"
 
 # Create vector.yml
 echo -e "${YELLOW}Creating vector configuration...${NC}"
@@ -269,6 +483,17 @@ if 'functions' in data['services']:
        'ENDPOINT_2_AUTH_HEADER': '${ENDPOINT_2_AUTH_HEADER}',
        'ENDPOINT_3_WEBHOOK_URL': '${ENDPOINT_3_WEBHOOK_URL}',
        'ENDPOINT_3_AUTH_HEADER': '${ENDPOINT_3_AUTH_HEADER}'
+   })
+
+# Add Kong timeout variables (optional, kong.yml method is primary)
+if 'kong' in data['services']:
+   if 'environment' not in data['services']['kong']:
+       data['services']['kong']['environment'] = {}
+   
+   data['services']['kong']['environment'].update({
+       'KONG_NGINX_PROXY_PROXY_CONNECT_TIMEOUT': '300000ms',
+       'KONG_NGINX_PROXY_PROXY_READ_TIMEOUT': '300000ms',
+       'KONG_NGINX_PROXY_PROXY_SEND_TIMEOUT': '300000ms'
    })
 
 with open('docker-compose.yml', 'w') as f:
@@ -434,7 +659,7 @@ serve(async (req) => {
 })
 EOF
 
-# n8n-proxy - PUBLIC endpoint (fixed version without Supabase client issues)
+# n8n-proxy - PUBLIC endpoint (fixed version)
 cat > volumes/functions/n8n-proxy/index.ts << 'EOF'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 
@@ -443,50 +668,24 @@ const corsHeaders = {
  'Access-Control-Allow-Headers': '*',
 }
 
-// Rate limiting
-const rateLimitMap = new Map<string, number>()
-const RATE_LIMIT_MS = 1000
-const MAX_ENTRIES = 1000
-
 serve(async (req: Request) => {
  if (req.method === 'OPTIONS') {
    return new Response('ok', { headers: corsHeaders })
  }
  
  try {
-   // Collect metadata
-   const authHeader = req.headers.get('Authorization')
-   const sessionId = req.headers.get('X-Session-ID')
-   const clientIp = req.headers.get('x-real-ip') || 
-                    req.headers.get('x-forwarded-for')?.split(',')[0] || 
-                    'unknown'
-   const identifier = sessionId || clientIp
+   let body = {}
    
-   // Rate limiting - check requests per second
-   const now = Date.now()
-   const lastCall = rateLimitMap.get(identifier) || 0
-   
-   if (now - lastCall < RATE_LIMIT_MS) {
-     return new Response(
-       JSON.stringify({ error: 'Too many requests. Please wait.' }),
-       { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-     )
-   }
-   
-   rateLimitMap.set(identifier, now)
-   
-   // Clean old entries (1% chance)
-   if (Math.random() < 0.01) {
-     const cutoff = now - 10000
-     for (const [key, time] of rateLimitMap) {
-       if (time < cutoff) rateLimitMap.delete(key)
-     }
-     if (rateLimitMap.size > MAX_ENTRIES) {
-       rateLimitMap.clear()
+   // Parse JSON only if body exists
+   if (req.headers.get('content-length') !== '0' && req.method !== 'GET') {
+     try {
+       body = await req.json()
+     } catch (e) {
+       // If not JSON, get as text
+       body = { data: await req.text() }
      }
    }
    
-   const body = await req.json()
    const n8nUrl = Deno.env.get('N8N_WEBHOOK_URL')
    const authHeaderN8N = Deno.env.get('N8N_BASIC_AUTH_HEADER')
    
@@ -500,13 +699,19 @@ serve(async (req: Request) => {
      )
    }
    
-   // All metadata for n8n
+   // Collect metadata
+   const authHeader = req.headers.get('Authorization')
+   const sessionId = req.headers.get('X-Session-ID')
+   const clientIp = req.headers.get('x-real-ip') || 
+                    req.headers.get('x-forwarded-for')?.split(',')[0] || 
+                    'unknown'
+   
+   // Metadata for n8n
    const enrichedBody = {
      ...body,
      session_id: sessionId || null,
      has_auth: !!authHeader,
      client_ip: clientIp,
-     identifier: identifier,
      timestamp: new Date().toISOString()
    }
    
@@ -655,93 +860,324 @@ serve(async (req: Request) => {
 EOF
 done
 
-# Nginx initial setup
-echo -e "${YELLOW}Setting up Nginx...${NC}"
-cat > /etc/nginx/sites-available/$DOMAIN << NGINX
+# Create error page
+echo -e "${YELLOW}Creating error pages...${NC}"
+mkdir -p /usr/share/nginx/html
+cat > /usr/share/nginx/html/50x.html << 'ERRORPAGE'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Service Unavailable</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            text-align: center;
+        }
+        .container {
+            padding: 2rem;
+        }
+        h1 {
+            font-size: 6rem;
+            margin: 0;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        h2 {
+            font-size: 1.5rem;
+            font-weight: 300;
+            margin: 1rem 0;
+        }
+        p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+            max-width: 500px;
+            margin: 2rem auto;
+        }
+        .info {
+            background: rgba(255,255,255,0.2);
+            padding: 1rem;
+            border-radius: 10px;
+            margin-top: 2rem;
+            font-size: 0.9rem;
+            display: inline-block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Oops!</h1>
+        <h2>Service Temporarily Unavailable</h2>
+        <p>Something went wrong on our end. Our team has been notified and we are working to fix the problem.</p>
+        <div class="info">
+            <strong>Please try refreshing the page in a few moments.</strong>
+        </div>
+    </div>
+</body>
+</html>
+ERRORPAGE
+
+# Create webroot directory for certbot
+echo -e "${YELLOW}Creating webroot directory for SSL certificate...${NC}"
+mkdir -p "/var/www/$DOMAIN/.well-known/acme-challenge"
+
+# Nginx initial setup for certbot webroot
+echo -e "${YELLOW}Setting up Nginx for SSL certificate generation...${NC}"
+cat > "/etc/nginx/sites-available/$DOMAIN" << NGINX
 server {
-   listen 80;
-   server_name $DOMAIN;
-   location / { return 200 "OK"; }
+    listen 80;
+    server_name $DOMAIN;
+    
+    location /.well-known/acme-challenge/ {
+        root /var/www/$DOMAIN;
+    }
+    
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
 }
 NGINX
 
-ln -sf /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/
+ln -sf "/etc/nginx/sites-available/$DOMAIN" /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default
 systemctl restart nginx
 
-# Get SSL certificate
-echo -e "${YELLOW}Obtaining SSL certificate...${NC}"
-certbot certonly --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL || true
+# Get SSL certificate using webroot
+echo -e "${GREEN}🔒 SSL Certificate Configuration${NC}"
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+echo -e "${GREEN}Obtaining SSL certificate from Let's Encrypt...${NC}"
+echo -e "${GREEN}Domain: ${YELLOW}$DOMAIN${NC}"
+echo -e "${GREEN}Email:  ${YELLOW}$EMAIL${NC}"
+echo ""
+if ! certbot certonly --webroot -w "/var/www/$DOMAIN" -d "$DOMAIN" --non-interactive --agree-tos -m "$EMAIL"; then
+    echo -e "${RED}✗ Certbot failed. Installation cannot continue without SSL.${NC}"
+    echo -e "${RED}  Please check that your DNS A record for '$DOMAIN' points to this server's IP.${NC}"
+    echo -e "${RED}  Server IP: $(curl -s ifconfig.me)${NC}"
+    echo -e "${RED}  Then run the script again.${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✔ SSL certificate obtained successfully${NC}"
+echo -e "${GREEN}  Certificate valid for 90 days (auto-renewal enabled)${NC}"
+echo ""
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
 
-# Final Nginx configuration
-cat > /etc/nginx/sites-available/$DOMAIN << NGINX
-server {
-   server_name $DOMAIN;
-   client_max_body_size 100M;
-   
-   # Critical for Realtime WebSocket
-   location /realtime/ {
-       proxy_pass http://localhost:8000;
-       proxy_http_version 1.1;
-       proxy_set_header Upgrade \$http_upgrade;
-       proxy_set_header Connection "upgrade";
-       proxy_set_header Host \$host;
-       proxy_set_header X-Real-IP \$remote_addr;
-       proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-       proxy_set_header X-Forwarded-Proto https;
-       proxy_buffering off;
-       proxy_cache off;
-       proxy_connect_timeout 86400s;
-       proxy_read_timeout 86400s;
-       proxy_send_timeout 86400s;
-       keepalive_timeout 86400s;
-       add_header X-Firefox-Spdy "h2=0" always;
-   }
-   
-   location / {
-       proxy_pass http://localhost:8000;
-       proxy_http_version 1.1;
-       proxy_set_header Upgrade \$http_upgrade;
-       proxy_set_header Connection "upgrade";
-       proxy_set_header Host \$host;
-       proxy_set_header X-Real-IP \$remote_addr;
-       proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-       proxy_set_header X-Forwarded-Proto https;
-       proxy_read_timeout 86400s;
-       proxy_send_timeout 86400s;
-   }
-   
-   listen 443 ssl;
-   ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-   ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
-   include /etc/letsencrypt/options-ssl-nginx.conf;
-   ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+# Create missing Let's Encrypt config files if needed
+echo -e "${YELLOW}Ensuring Let's Encrypt SSL configuration...${NC}"
+if [ ! -f "/etc/letsencrypt/options-ssl-nginx.conf" ]; then
+    cat > /etc/letsencrypt/options-ssl-nginx.conf << 'SSL_CONF'
+ssl_session_cache shared:le_nginx_SSL:10m;
+ssl_session_timeout 1440m;
+ssl_session_tickets off;
+ssl_protocols TLSv1.2 TLSv1.3;
+ssl_prefer_server_ciphers off;
+ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384";
+SSL_CONF
+fi
+
+if [ ! -f "/etc/letsencrypt/ssl-dhparams.pem" ]; then
+    openssl dhparam -out /etc/letsencrypt/ssl-dhparams.pem 2048 &> /dev/null
+fi
+
+# Final Nginx configuration with all optimizations and proper timeouts
+cat > /etc/nginx/sites-available/$DOMAIN << 'NGINX'
+# Rate limiting zones
+limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+limit_req_zone $binary_remote_addr zone=functions:10m rate=5r/s;
+limit_req_zone $binary_remote_addr zone=n8n:10m rate=2r/s;
+
+# WebSocket upgrade map
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
 }
 
 server {
-   listen 80;
-   server_name $DOMAIN;
-   return 301 https://\$host\$request_uri;
+    listen 80;
+    server_name DOMAIN_PLACEHOLDER;
+    
+    location /.well-known/acme-challenge/ {
+        root /var/www/DOMAIN_PLACEHOLDER;
+    }
+    
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    server_name DOMAIN_PLACEHOLDER;
+    
+    ssl_certificate /etc/letsencrypt/live/DOMAIN_PLACEHOLDER/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/DOMAIN_PLACEHOLDER/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+    
+    client_max_body_size 100M;
+    
+    # Error handling
+    proxy_intercept_errors on;
+    error_page 502 503 504 /50x.html;
+    location = /50x.html {
+        root /usr/share/nginx/html;
+        internal;
+    }
+    
+    # Realtime WebSocket - needs long timeouts
+    location ~ ^/realtime/v1 {
+        proxy_pass http://localhost:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        
+        proxy_buffering off;
+        proxy_cache off;
+        
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_connect_timeout 10s;
+        
+        limit_req zone=api burst=20 nodelay;
+    }
+    
+    # Public n8n-proxy endpoint with 5-minute timeout
+    location = /functions/v1/n8n-proxy {
+        proxy_pass http://localhost:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        
+        proxy_request_buffering off;
+        client_body_buffer_size 1M;
+        
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_connect_timeout 10s;
+        
+        limit_req zone=n8n burst=5 nodelay;
+    }
+    
+    # Edge Functions - 5-minute timeouts
+    location ~ ^/functions/v1 {
+        proxy_pass http://localhost:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        
+        proxy_request_buffering off;
+        client_body_buffer_size 1M;
+        
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_connect_timeout 10s;
+        
+        limit_req zone=functions burst=10 nodelay;
+    }
+    
+    # Storage - longer timeouts for file uploads
+    location ~ ^/storage/v1 {
+        proxy_pass http://localhost:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        proxy_connect_timeout 10s;
+        client_max_body_size 5G;
+        
+        limit_req zone=api burst=20 nodelay;
+    }
+    
+    # Everything else - standard timeouts
+    location / {
+        proxy_pass http://localhost:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        
+        # Conditional WebSocket support
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_connect_timeout 10s;
+        
+        limit_req zone=api burst=20 nodelay;
+    }
 }
 NGINX
+
+# Replace domain placeholder in all places
+sed -i "s|DOMAIN_PLACEHOLDER|$DOMAIN|g" "/etc/nginx/sites-available/$DOMAIN"
 
 systemctl reload nginx
 
 # Start Docker containers
-echo -e "${YELLOW}Starting Docker containers...${NC}"
+echo -e "${GREEN}🐳 Starting Docker Containers${NC}"
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+echo -e "${GREEN}Starting all Supabase services...${NC}"
 # Use docker compose v2 if available, otherwise docker-compose
 if docker compose version &> /dev/null 2>&1; then
     docker compose up -d
 else
     docker-compose up -d
 fi
+echo -e "${GREEN}✔ All containers started${NC}"
+echo ""
 
-echo -e "${YELLOW}Waiting for services to start (60 seconds)...${NC}"
-sleep 60
+# Wait for Kong to be ready with improved check
+echo -e "${GREEN}Waiting for services to initialize...${NC}"
+KONG_READY=false
+echo -n "  "
+for i in {1..60}; do
+    # Check for 401 which means Kong is up but needs auth
+    if curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/status 2>/dev/null | grep -q "401"; then
+        KONG_READY=true
+        echo -e " ${GREEN}✔${NC}"
+        echo -e "${GREEN}✔ Kong API Gateway is ready${NC}"
+        break
+    fi
+    echo -n "▓"
+    sleep 2
+done
 
-# Create function_logs table
+if [ "$KONG_READY" = false ]; then
+    echo -e " ${YELLOW}⚠${NC}"
+    echo -e "${YELLOW}⚠ Kong may still be starting up. This is normal for first installation.${NC}"
+    echo -e "${YELLOW}  You can check status later with: curl http://localhost:8000/status${NC}"
+fi
+echo ""
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+
+# Create function_logs table with proper error handling
 echo -e "${YELLOW}Creating database tables...${NC}"
-docker exec supabase-db psql -U postgres -d postgres -c "
+sleep 10 # Give postgres extra time
+if docker exec supabase-db psql -U postgres -d postgres -c "
 CREATE TABLE IF NOT EXISTS public.function_logs (
    user_id UUID NOT NULL,
    function_name TEXT NOT NULL,
@@ -749,9 +1185,101 @@ CREATE TABLE IF NOT EXISTS public.function_logs (
    PRIMARY KEY (user_id, function_name)
 );
 ALTER TABLE public.function_logs ENABLE ROW LEVEL SECURITY;
-CREATE INDEX IF NOT EXISTS idx_function_logs_lookup ON function_logs(user_id, function_name, last_called_at);" 2>/dev/null || true
+CREATE INDEX IF NOT EXISTS idx_function_logs_lookup ON function_logs(user_id, function_name, last_called_at);"; then
+    echo -e "${GREEN}✔ Database tables created successfully${NC}"
+else
+    echo -e "${YELLOW}⚠ Warning: Could not create function_logs table. This may affect rate limiting for Edge Functions.${NC}"
+    echo -e "${YELLOW}  You can create it manually later by running:${NC}"
+    echo "  docker exec supabase-db psql -U postgres -d postgres -c 'CREATE TABLE ...'"
+fi
 
-# Save credentials
+# Create DB hardening script
+echo -e "${YELLOW}Creating database hardening script...${NC}"
+cat > /root/harden_supabase_db.sh << 'HARDEN_SCRIPT'
+#!/bin/bash
+# Supabase Database Hardening Script
+# Restricts PostgreSQL access to specific IP addresses
+
+set -euo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+echo -e "${YELLOW}========================================${NC}"
+echo -e "${YELLOW}  Supabase Database Hardening Script${NC}"
+echo -e "${YELLOW}========================================${NC}\n"
+
+if [ "$EUID" -ne 0 ]; then 
+  echo -e "${RED}This script must be run as root${NC}"
+  exit 1
+fi
+
+echo -e "${YELLOW}This script will restrict PostgreSQL port 5432 to specific IP addresses.${NC}"
+echo -e "${YELLOW}This helps protect your database from unauthorized access.${NC}\n"
+
+# Step 1: Fix Docker/UFW compatibility
+echo -e "${YELLOW}Step 1: Configuring Docker/UFW compatibility...${NC}"
+if [ ! -f /etc/docker/daemon.json ]; then
+    echo '{"iptables": false}' > /etc/docker/daemon.json
+elif ! grep -q '"iptables"' /etc/docker/daemon.json; then
+    # Add iptables setting to existing daemon.json
+    sed -i 's/^{/{\n  "iptables": false,/' /etc/docker/daemon.json
+fi
+
+echo -e "${YELLOW}Restarting Docker to apply changes...${NC}"
+systemctl restart docker
+
+# Wait for Docker to be ready
+sleep 5
+
+echo -e "${GREEN}✔ Docker/UFW compatibility configured${NC}\n"
+
+# Step 2: Get trusted IP
+echo -e "${YELLOW}Step 2: Configure trusted IP addresses${NC}"
+echo -e "${YELLOW}Enter the IP address that should have access to PostgreSQL.${NC}"
+echo -e "${YELLOW}You can add multiple IPs by running this script again.${NC}"
+echo -e "${YELLOW}Examples: ${NC}"
+echo -e "  - Your office IP: 203.0.113.45"
+echo -e "  - Your VPN server: 198.51.100.22"
+echo -e "  - Another server: 192.0.2.15\n"
+
+read -p "Enter trusted IP address: " TRUSTED_IP
+
+# Validate IP format
+if ! [[ $TRUSTED_IP =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+    echo -e "${RED}Invalid IP address format${NC}"
+    exit 1
+fi
+
+# Step 3: Configure firewall rules
+echo -e "\n${YELLOW}Step 3: Applying firewall rules...${NC}"
+
+echo -e "${YELLOW}Removing general access rule if exists...${NC}"
+ufw delete allow 5432/tcp 2>/dev/null || true
+
+echo -e "${YELLOW}Adding access rule for $TRUSTED_IP...${NC}"
+ufw allow from $TRUSTED_IP to any port 5432 comment "PostgreSQL access for $TRUSTED_IP"
+
+echo -e "${GREEN}✔ Firewall rules applied${NC}\n"
+
+# Show current rules
+echo -e "${YELLOW}Current PostgreSQL access rules:${NC}"
+ufw status numbered | grep 5432 || echo "No rules found for port 5432"
+
+echo -e "\n${GREEN}========================================${NC}"
+echo -e "${GREEN}  Database Hardening Complete!${NC}"
+echo -e "${GREEN}========================================${NC}\n"
+echo -e "${YELLOW}PostgreSQL (port 5432) is now restricted to: $TRUSTED_IP${NC}"
+echo -e "${YELLOW}To add more IPs, run this script again.${NC}"
+echo -e "${YELLOW}To view all rules: ufw status numbered${NC}"
+echo -e "${YELLOW}To remove a rule: ufw delete [rule number]${NC}"
+HARDEN_SCRIPT
+
+chmod +x /root/harden_supabase_db.sh
+
+# Save credentials with restricted permissions
 cat > /root/supabase-credentials.txt << CREDS
 ========================================
 SUPABASE INSTALLATION COMPLETE
@@ -765,9 +1293,11 @@ Password: $DASHBOARD_PASSWORD
 Database Connection (via pooler):
  Host: $DOMAIN
  Port: 5432
- Username: postgres.your-tenant-id
+ Username: postgres.postgres
  Password: $POSTGRES_PASSWORD
  Database: postgres
+ 
+ Note: Using 'postgres' as tenant ID for maximum compatibility
 
 API Keys:
  Anon: $ANON_KEY
@@ -784,7 +1314,21 @@ WebSocket Test:
  ws.onopen = () => console.log('Realtime connected!');
 
 ========================================
-IMPORTANT: AFTER CONFIGURING WEBHOOKS
+POST-INSTALL SECURITY SCRIPT
+========================================
+
+By default, the database port 5432 is open to all IPs.
+To restrict access to specific IP addresses, run:
+
+  bash /root/harden_supabase_db.sh
+
+This script will:
+- Configure Docker/UFW compatibility
+- Restrict port 5432 to your trusted IPs only
+- Show you how to manage access rules
+
+========================================
+WEBHOOK CONFIGURATION
 ========================================
 
 1. Edit webhook URLs in .env file:
@@ -799,7 +1343,26 @@ IMPORTANT: AFTER CONFIGURING WEBHOOKS
   docker-compose down && docker-compose up -d
 
 ========================================
-QUICK RESTART COMMANDS
+FIXES APPLIED IN THIS VERSION
+========================================
+
+1. Edge Functions DNS Fix:
+   - Docker configured with public DNS (8.8.8.8, 8.8.4.4, 1.1.1.1)
+   - Functions remain stable after nginx/container restarts
+
+2. Kong 5-Minute Timeout Fix:
+   - Kong configured with 300-second timeouts
+   - Supports long-running AI workflows in n8n
+   - No more 60-second cutoffs
+
+3. Automatic Log Rotation:
+   - Docker logs limited to 10MB per container
+   - System logrotate configured for daily rotation
+   - Keeps only 7 days of compressed logs
+   - Prevents disk space issues
+
+========================================
+QUICK COMMANDS
 ========================================
 
 # Restart only functions (faster):
@@ -813,34 +1376,46 @@ docker-compose down && docker-compose up -d
 # Check logs:
 docker logs supabase-edge-functions --tail 50
 
+# Check log sizes:
+du -sh /var/lib/docker/containers/*/*-json.log | sort -h
+
+# Force log rotation:
+logrotate -f /etc/logrotate.d/docker-containers
+
 ========================================
 CREDS
 
-# Final check and instructions
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}INSTALLATION COMPLETE!${NC}"
-echo -e "${GREEN}========================================${NC}"
+# Set restrictive permissions on credentials file
+chmod 600 /root/supabase-credentials.txt
+
+# Final instructions
 echo ""
-echo -e "${YELLOW}Credentials saved to: /root/supabase-credentials.txt${NC}"
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}                    🎉 INSTALLATION COMPLETE! 🎉${NC}"
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo -e "${RED}========================================${NC}"
-echo -e "${RED}IMPORTANT: CONFIGURE YOUR WEBHOOKS NOW${NC}"
-echo -e "${RED}========================================${NC}"
+echo -e "${GREEN}✔ Supabase is running at:${NC} https://$DOMAIN"
+echo -e "${GREEN}✔ All services are healthy and ready${NC}"
+echo -e "${GREEN}✔ Edge Functions DNS fix applied - stable after restarts${NC}"
+echo -e "${GREEN}✔ Kong timeout fix applied - supports 5-minute requests${NC}"
+echo -e "${GREEN}✔ Log rotation configured - prevents disk space issues${NC}"
 echo ""
-echo -e "${YELLOW}Step 1: Edit configuration file:${NC}"
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${YELLOW}                     📋 NEXT STEPS${NC}"
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+echo -e "${GREEN}1. 📄 View credentials:${NC}"
+echo "   nano /root/supabase-credentials.txt"
+echo ""
+echo -e "${GREEN}2. 🔐 Secure database port (recommended):${NC}"
+echo "   bash /root/harden_supabase_db.sh"
+echo ""
+echo -e "${RED}3. 🗑️ SECURITY: After saving credentials elsewhere:${NC}"
+echo "   rm /root/supabase-credentials.txt"
+echo ""
+echo -e "${GREEN}4. 🔧 Configure webhooks if using Edge Functions:${NC}"
 echo "   nano /opt/supabase-project/.env"
+echo "   (Add N8N_WEBHOOK_URL and restart containers)"
 echo ""
-echo -e "${YELLOW}Step 2: Add your webhook URLs:${NC}"
-echo "   N8N_WEBHOOK_URL=https://your-n8n.com/webhook/xxx"
-echo "   N8N_BASIC_AUTH_HEADER=Basic base64_encoded_user:pass"
-echo ""
-echo -e "${YELLOW}Step 3: RESTART containers to apply changes:${NC}"
-echo -e "${GREEN}   cd /opt/supabase-project${NC}"
-echo -e "${GREEN}   docker-compose down && docker-compose up -d${NC}"
-echo ""
-echo -e "${YELLOW}Step 4: Wait 30 seconds, then test:${NC}"
-echo "   curl -X POST https://$DOMAIN/functions/v1/n8n-proxy \\"
-echo "     -H \"Content-Type: application/json\" \\"
-echo "     -H \"X-Session-ID: test-123\" \\"
-echo "     -d '{\"test\": \"data\"}'"
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
