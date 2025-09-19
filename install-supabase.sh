@@ -1405,7 +1405,7 @@ To restrict access to specific IP addresses, run:
 
 This script will:
 - Configure Docker/UFW compatibility
-- Restrict port 5432 to your trusted IPs only
+- Restrict port 5432 to your trusted IPs only (does not work with the IP of the same server where Supabase is deployed)
 - Show you how to manage access rules
 
 ========================================
