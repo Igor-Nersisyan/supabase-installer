@@ -1145,7 +1145,7 @@ server {
         proxy_send_timeout 300s;
         proxy_connect_timeout 10s;
         
-        limit_req zone=n8n burst=5 nodelay;
+        limit_req zone=n8n burst=100 nodelay;
     }
     
     # Edge Functions - 5-minute timeouts
