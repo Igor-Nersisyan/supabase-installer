@@ -1164,7 +1164,7 @@ server {
         proxy_send_timeout 300s;
         proxy_connect_timeout 10s;
         
-        limit_req zone=functions burst=10 nodelay;
+        limit_req zone=functions burst=100 nodelay;
     }
     
     # Storage - longer timeouts for file uploads
