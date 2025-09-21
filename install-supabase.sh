@@ -1066,9 +1066,9 @@ fi
 # Final Nginx configuration with all optimizations and proper timeouts
 cat > /etc/nginx/sites-available/$DOMAIN << 'NGINX'
 # Rate limiting zones
-limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
-limit_req_zone $binary_remote_addr zone=functions:10m rate=5r/s;
-limit_req_zone $binary_remote_addr zone=n8n:10m rate=2r/s;
+limit_req_zone $binary_remote_addr zone=api:10m rate=50r/s;
+limit_req_zone $binary_remote_addr zone=functions:10m rate=50r/s;
+limit_req_zone $binary_remote_addr zone=n8n:10m rate=50r/s;
 
 # WebSocket upgrade map
 map $http_upgrade $connection_upgrade {
