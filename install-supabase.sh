@@ -691,8 +691,8 @@ serve(async (req: Request) => {
      envVars,
      forceCreate: false,
      netAccessDisabled: false,
-     cpuTimeSoftLimitMs: 1000,
-     cpuTimeHardLimitMs: 2000,
+     cpuTimeSoftLimitMs: 5000,
+     cpuTimeHardLimitMs: 10000,
    })
  }
  
