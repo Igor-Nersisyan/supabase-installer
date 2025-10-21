@@ -2,7 +2,7 @@
 
 🚀 **Complete production-ready Supabase installation**
 
-[![Version](https://img.shields.io/badge/version-3.9-blue.svg)](https://github.com/Igor-Nersisyan/supabase-installer)
+[![Version](https://img.shields.io/badge/version-3.11-blue.svg)](https://github.com/Igor-Nersisyan/supabase-installer)
 [![Ubuntu](https://img.shields.io/badge/Ubuntu-20.04%20|%2022.04%20|%2024.04-orange.svg)](https://ubuntu.com/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -16,7 +16,7 @@ A battle-tested installer that deploys self-hosted Supabase with enterprise feat
 - 🐘 **PostgreSQL 15** with connection pooler
 - 🚀 **Kong API Gateway** with fixed 5-minute timeouts
 - 🔐 **GoTrue Authentication** service
-- 📦 **Storage API** with 5GB file support
+- 📦 **Storage API** with 10GB file support
 - ⚡ **Realtime** websocket server
 - 🔧 **Edge Functions** with Deno runtime
 - 📊 **Vector logs aggregation**
@@ -29,6 +29,8 @@ A battle-tested installer that deploys self-hosted Supabase with enterprise feat
 - 📝 **Log rotation** (10MB per container, 7-day retention)
 - 🌐 **DNS configuration** for stable Edge Functions
 - 🔐 **Database hardening script** included
+- 💾 **10GB file uploads** via API/SDK (TUS resumable protocol)
+- 🔧 **Analytics optimization** - memory reduced by 65%
 
 ### Custom Edge Functions
 Pre-configured Edge Functions for integrations:
@@ -112,6 +114,17 @@ docker logs supabase-edge-functions --tail 50
 docker logs supabase-kong --tail 50
 docker logs supabase-db --tail 50
 ```
+
+## 📦 10GB File Upload Support
+
+The installer configures full 10GB upload support:
+- **Storage service**: 10GB for TUS resumable uploads
+- **Kong gateway**: 11GB request body limit
+- **Nginx proxy**: 11GB client body size
+- **Extended timeouts**: 2 hours for slow connections
+
+**Note**: Studio UI limited to 6MB uploads (use SDK/API for large files)
+
 
 ### Edge Functions Management
 
