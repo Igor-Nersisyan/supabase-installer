@@ -1,6 +1,6 @@
 #!/bin/bash
-# Supabase Self-Hosted Production Installer v3.9 - Complete Edition with Analytics Optimization
-# Includes: DNS fix, Kong timeout fix, automatic log rotation, analytics memory optimization
+# Supabase Self-Hosted Production Installer v3.11 - Complete Edition with 10GB Upload Support
+# Includes: DNS fix, Kong timeout fix, automatic log rotation, analytics memory optimization, 10GB file uploads
 set -euo pipefail
 
 RED='\033[0;31m'
@@ -40,8 +40,8 @@ cat << 'HEADER'
    ╚══════╝ ╚═════╝ ╚═╝     ╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝╚══════╝╚══════╝
 HEADER
 
-echo -e "${GREEN}                   Self-Hosted Installer v3.9${NC}"
-echo -e "${GREEN}           Complete Edition with Analytics Optimization${NC}"
+echo -e "${GREEN}                   Self-Hosted Installer v3.11${NC}"
+echo -e "${GREEN}        Complete Edition with 10GB File Upload Support${NC}"
 echo ""
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
@@ -51,7 +51,7 @@ echo -e "${YELLOW}📋 Minimum System Requirements:${NC}"
 echo ""
 echo -e "  ${GREEN}▸${NC} CPU:  2+ cores"
 echo -e "  ${GREEN}▸${NC} RAM:  3+ GB"
-echo -e "  ${GREEN}▸${NC} Disk: 20+ GB"
+echo -e "  ${GREEN}▸${NC} Disk: 20+ GB (more for 10GB file uploads)"
 echo -e "  ${GREEN}▸${NC} OS:   Ubuntu 20.04+ / Debian 11+"
 echo ""
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -262,6 +262,7 @@ echo -e "${GREEN}Setting up Supabase directory...${NC}"
 
 cd /opt
 rm -rf supabase-project
+rm -rf supabase
 echo -e "${GREEN}Cloning Supabase repository...${NC}"
 git clone --depth 1 https://github.com/supabase/supabase.git
 mkdir -p supabase-project
@@ -277,20 +278,25 @@ sed -i '/^name:/d' docker-compose.yml 2>/dev/null || true
 sed -i 's/: true/: "true"/g' docker-compose.yml
 sed -i 's/: false/: "false"/g' docker-compose.yml
 
-# Optimize analytics container configuration
-echo -e "${GREEN}🔧 Configuring Analytics Container Optimization${NC}"
+# Optimize analytics container AND add 10GB upload support
+echo -e "${GREEN}🔧 Configuring Services with 10GB Upload Support${NC}"
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo -e "${GREEN}Applying memory optimization for analytics service...${NC}"
+echo -e "${GREEN}Applying memory optimization and 10GB file upload configuration...${NC}"
 
-# Add telemetry disable variables to reduce memory consumption
-python3 << 'PYTHONEOF'
+# Pass DOMAIN to Python script
+python3 << PYTHONEOF
 import yaml
 import sys
+
+# Domain passed as variable from bash
+domain = "$DOMAIN"
 
 try:
     with open('docker-compose.yml', 'r') as f:
         data = yaml.safe_load(f)
+
+    modified = False
 
     # Add environment variables to analytics service if it exists
     if 'services' in data and 'analytics' in data['services']:
@@ -314,23 +320,71 @@ try:
             if key not in data['services']['analytics']['environment']:
                 data['services']['analytics']['environment'][key] = value
         
+        print("✔ Analytics optimization variables added")
+        modified = True
+
+    # Add 10GB upload support to storage service
+    if 'services' in data and 'storage' in data['services']:
+        if 'environment' not in data['services']['storage']:
+            data['services']['storage']['environment'] = {}
+        
+        storage_vars = {
+            'UPLOAD_FILE_SIZE_LIMIT': '10737418240',  # 10GB for TUS resumable uploads
+            'UPLOAD_FILE_SIZE_LIMIT_STANDARD': '1073741824',  # 1GB for standard uploads
+            'SERVER_KEEP_ALIVE_TIMEOUT': '7200',  # 2 hours
+            'SERVER_HEADERS_TIMEOUT': '7200',  # 2 hours
+            'UPLOAD_SIGNED_URL_EXPIRATION_TIME': '7200',  # 2 hours
+            'TUS_URL_PATH': '/storage/v1/upload/resumable',
+            'TUS_URL_HOST': domain,  # Use actual domain value
+            'STORAGE_BACKEND_URL': f'https://{domain}'  # Use actual domain value
+        }
+        
+        for key, value in storage_vars.items():
+            data['services']['storage']['environment'][key] = value
+        
+        print(f"✔ Storage service configured for 10GB uploads with domain: {domain}")
+        modified = True
+
+    # Add Kong configuration for large body size
+    if 'services' in data and 'kong' in data['services']:
+        if 'environment' not in data['services']['kong']:
+            data['services']['kong']['environment'] = {}
+        
+        kong_vars = {
+            'KONG_NGINX_HTTP_CLIENT_MAX_BODY_SIZE': '11000m',  # 11GB with margin
+            'KONG_NGINX_HTTP_CLIENT_BODY_BUFFER_SIZE': '128m',
+            'KONG_NGINX_PROXY_PROXY_CONNECT_TIMEOUT': '300000ms',
+            'KONG_NGINX_PROXY_PROXY_READ_TIMEOUT': '300000ms',
+            'KONG_NGINX_PROXY_PROXY_SEND_TIMEOUT': '300000ms'
+        }
+        
+        for key, value in kong_vars.items():
+            data['services']['kong']['environment'][key] = value
+        
+        print("✔ Kong configured for 10GB request body support")
+        modified = True
+        
+    if modified:
         with open('docker-compose.yml', 'w') as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-        
-        print("✔ Analytics optimization variables added successfully")
+        print("✔ All service configurations applied successfully")
+        sys.exit(0)
     else:
-        print("⚠ Analytics service not found in docker-compose.yml, skipping optimization")
+        print("⚠ No services found to modify")
+        sys.exit(1)
         
 except Exception as e:
-    print(f"⚠ Could not modify docker-compose.yml automatically: {e}")
-    print("  You can manually add these variables to the analytics environment section:")
-    print("    LOGFLARE_TELEMETRY_ENABLED: 'false'")
-    print("    TELEMETRY_ENABLED: 'false'")
-    print("    LOGFLARE_HEARTBEAT_INTERVAL: '60000'")
-    print("    DD_ENABLED: 'false'")
-    print("    DATADOG_API_KEY: 'disabled'")
+    print(f"⚠ Could not modify docker-compose.yml: {e}")
+    sys.exit(1)
 PYTHONEOF
 
+if [ $? -ne 0 ]; then
+    echo -e "${RED}ERROR: Failed to configure services for 10GB uploads${NC}"
+    echo -e "${RED}Manual configuration required. Check docker-compose.yml${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✔ Services configured for 10GB file uploads${NC}"
 echo -e "${GREEN}✔ Analytics container optimized (memory usage reduced by ~65%)${NC}"
 echo ""
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -424,8 +478,8 @@ sed -i "s|^SMTP_PORT=.*|SMTP_PORT=587|" .env
 sed -i "s|^SMTP_USER=.*|SMTP_USER=$EMAIL|" .env
 sed -i "s|^SMTP_SENDER_NAME=.*|SMTP_SENDER_NAME=Supabase|" .env
 
-# Add additional configurations
-cat >> .env << 'ENVEOF'
+# Add additional configurations with FIXED domain values (not $DOMAIN)
+cat >> .env << ENVEOF
 
 # Realtime Configuration
 REALTIME_IP_VERSION=IPv4
@@ -437,6 +491,11 @@ REALTIME_MAX_EVENTS_PER_SECOND=100
 
 # Functions
 FUNCTIONS_VERIFY_JWT=true
+
+# Storage URL configuration for TUS (10GB uploads)
+TUS_URL_HOST=$DOMAIN
+TUS_URL_PATH=/storage/v1/upload/resumable
+STORAGE_BACKEND_URL=https://$DOMAIN
 
 # N8N Integration (public endpoint)
 N8N_WEBHOOK_URL=
@@ -467,35 +526,59 @@ fi
 
 echo -e "${GREEN}✔ Kong configuration variables substituted successfully${NC}"
 
-# CRITICAL FIX: Add Kong timeouts to prevent 60-second cutoff
+# Remove any problematic timeout lines from kong.yml (check all indentation levels)
+echo -e "${YELLOW}Cleaning Kong configuration...${NC}"
+# Remove standalone timeout lines that might conflict (at any indentation level)
+sed -i '/^\s*connect_timeout: 300000$/d' volumes/api/kong.yml
+sed -i '/^\s*write_timeout: 300000$/d' volumes/api/kong.yml
+sed -i '/^\s*read_timeout: 300000$/d' volumes/api/kong.yml
+
+# Add Kong timeouts to prevent 60-second cutoff - properly within service definition
 echo -e "${YELLOW}Configuring Kong timeouts for long-running functions...${NC}"
 
-# Find the functions-v1 service and add timeouts
 python3 << 'PYTHONEOF'
 import yaml
 import sys
 
-with open('volumes/api/kong.yml', 'r') as f:
-    data = yaml.safe_load(f)
+try:
+    with open('volumes/api/kong.yml', 'r') as f:
+        data = yaml.safe_load(f)
 
-# Find and update functions service
-if 'services' in data:
-    for service in data['services']:
-        if service.get('name') == 'functions-v1':
-            service['connect_timeout'] = 300000
-            service['write_timeout'] = 300000
-            service['read_timeout'] = 300000
-            print("✔ Added 300-second timeouts to functions-v1 service")
-            break
+    # Find and update functions service
+    modified = False
+    if 'services' in data:
+        for service in data['services']:
+            if service.get('name') == 'functions-v1':
+                service['connect_timeout'] = 300000
+                service['write_timeout'] = 300000
+                service['read_timeout'] = 300000
+                print("✔ Added 300-second timeouts to functions-v1 service")
+                modified = True
+                break
 
-with open('volumes/api/kong.yml', 'w') as f:
-    yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+    if modified:
+        with open('volumes/api/kong.yml', 'w') as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        sys.exit(0)
+    else:
+        print("⚠ functions-v1 service not found in kong.yml")
+        sys.exit(1)
+        
+except Exception as e:
+    print(f"⚠ Could not modify kong.yml: {e}")
+    sys.exit(1)
 PYTHONEOF
 
-# If Python fails, use sed as fallback
 if [ $? -ne 0 ]; then
     echo -e "${YELLOW}Python method failed, using sed to add timeouts...${NC}"
-    sed -i '/name: functions-v1$/a\  connect_timeout: 300000\n  write_timeout: 300000\n  read_timeout: 300000' volumes/api/kong.yml
+    # More robust sed command
+    if grep -q "name: functions-v1" volumes/api/kong.yml; then
+        sed -i '/name: functions-v1$/a\  connect_timeout: 300000\n  write_timeout: 300000\n  read_timeout: 300000' volumes/api/kong.yml
+        echo -e "${GREEN}✔ Kong timeouts added via sed${NC}"
+    else
+        echo -e "${RED}WARNING: Could not find functions-v1 service in kong.yml${NC}"
+        echo -e "${YELLOW}Edge Functions may timeout after 60 seconds${NC}"
+    fi
 fi
 
 echo -e "${GREEN}✔ Kong timeouts configured for 5-minute requests${NC}"
@@ -537,52 +620,55 @@ python3 << 'PYTHONEOF'
 import yaml
 import sys
 
-with open('docker-compose.yml', 'r') as f:
-   data = yaml.safe_load(f)
+try:
+    with open('docker-compose.yml', 'r') as f:
+        data = yaml.safe_load(f)
 
-# Add ENV variables to functions service
-if 'functions' in data['services']:
-   if 'environment' not in data['services']['functions']:
-       data['services']['functions']['environment'] = {}
-   
-   data['services']['functions']['environment'].update({
-       'N8N_WEBHOOK_URL': '${N8N_WEBHOOK_URL}',
-       'N8N_BASIC_AUTH_HEADER': '${N8N_BASIC_AUTH_HEADER}',
-       'ENDPOINT_1_WEBHOOK_URL': '${ENDPOINT_1_WEBHOOK_URL}',
-       'ENDPOINT_1_AUTH_HEADER': '${ENDPOINT_1_AUTH_HEADER}',
-       'ENDPOINT_2_WEBHOOK_URL': '${ENDPOINT_2_WEBHOOK_URL}',
-       'ENDPOINT_2_AUTH_HEADER': '${ENDPOINT_2_AUTH_HEADER}',
-       'ENDPOINT_3_WEBHOOK_URL': '${ENDPOINT_3_WEBHOOK_URL}',
-       'ENDPOINT_3_AUTH_HEADER': '${ENDPOINT_3_AUTH_HEADER}'
-   })
+    modified = False
 
-# Add Kong timeout variables (optional, kong.yml method is primary)
-if 'kong' in data['services']:
-   if 'environment' not in data['services']['kong']:
-       data['services']['kong']['environment'] = {}
-   
-   data['services']['kong']['environment'].update({
-       'KONG_NGINX_PROXY_PROXY_CONNECT_TIMEOUT': '300000ms',
-       'KONG_NGINX_PROXY_PROXY_READ_TIMEOUT': '300000ms',
-       'KONG_NGINX_PROXY_PROXY_SEND_TIMEOUT': '300000ms'
-   })
+    # Add ENV variables to functions service
+    if 'functions' in data.get('services', {}):
+        if 'environment' not in data['services']['functions']:
+            data['services']['functions']['environment'] = {}
+        
+        data['services']['functions']['environment'].update({
+            'N8N_WEBHOOK_URL': '${N8N_WEBHOOK_URL}',
+            'N8N_BASIC_AUTH_HEADER': '${N8N_BASIC_AUTH_HEADER}',
+            'ENDPOINT_1_WEBHOOK_URL': '${ENDPOINT_1_WEBHOOK_URL}',
+            'ENDPOINT_1_AUTH_HEADER': '${ENDPOINT_1_AUTH_HEADER}',
+            'ENDPOINT_2_WEBHOOK_URL': '${ENDPOINT_2_WEBHOOK_URL}',
+            'ENDPOINT_2_AUTH_HEADER': '${ENDPOINT_2_AUTH_HEADER}',
+            'ENDPOINT_3_WEBHOOK_URL': '${ENDPOINT_3_WEBHOOK_URL}',
+            'ENDPOINT_3_AUTH_HEADER': '${ENDPOINT_3_AUTH_HEADER}'
+        })
+        
+        print("✔ ENV variables added to functions service")
+        modified = True
 
-with open('docker-compose.yml', 'w') as f:
-   yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+    if modified:
+        with open('docker-compose.yml', 'w') as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        sys.exit(0)
+    else:
+        print("⚠ functions service not found in docker-compose.yml")
+        sys.exit(1)
+        
+except Exception as e:
+    print(f"⚠ Could not modify docker-compose.yml: {e}")
+    sys.exit(1)
 PYTHONEOF
 
-# If Python fails, use manual method
 if [ $? -ne 0 ]; then
-   echo -e "${YELLOW}Python method failed, using manual edit...${NC}"
-   echo -e "${RED}IMPORTANT: Manually add these to docker-compose.yml functions environment section:${NC}"
-   echo "      N8N_WEBHOOK_URL: \${N8N_WEBHOOK_URL}"
-   echo "      N8N_BASIC_AUTH_HEADER: \${N8N_BASIC_AUTH_HEADER}"
-   echo "      ENDPOINT_1_WEBHOOK_URL: \${ENDPOINT_1_WEBHOOK_URL}"
-   echo "      ENDPOINT_1_AUTH_HEADER: \${ENDPOINT_1_AUTH_HEADER}"
-   echo "      ENDPOINT_2_WEBHOOK_URL: \${ENDPOINT_2_WEBHOOK_URL}"
-   echo "      ENDPOINT_2_AUTH_HEADER: \${ENDPOINT_2_AUTH_HEADER}"
-   echo "      ENDPOINT_3_WEBHOOK_URL: \${ENDPOINT_3_WEBHOOK_URL}"
-   echo "      ENDPOINT_3_AUTH_HEADER: \${ENDPOINT_3_AUTH_HEADER}"
+    echo -e "${YELLOW}Failed to add ENV variables automatically.${NC}"
+    echo -e "${RED}IMPORTANT: Manually add these to docker-compose.yml functions environment section:${NC}"
+    echo "      N8N_WEBHOOK_URL: \${N8N_WEBHOOK_URL}"
+    echo "      N8N_BASIC_AUTH_HEADER: \${N8N_BASIC_AUTH_HEADER}"
+    echo "      ENDPOINT_1_WEBHOOK_URL: \${ENDPOINT_1_WEBHOOK_URL}"
+    echo "      ENDPOINT_1_AUTH_HEADER: \${ENDPOINT_1_AUTH_HEADER}"
+    echo "      ENDPOINT_2_WEBHOOK_URL: \${ENDPOINT_2_WEBHOOK_URL}"
+    echo "      ENDPOINT_2_AUTH_HEADER: \${ENDPOINT_2_AUTH_HEADER}"
+    echo "      ENDPOINT_3_WEBHOOK_URL: \${ENDPOINT_3_WEBHOOK_URL}"
+    echo "      ENDPOINT_3_AUTH_HEADER: \${ENDPOINT_3_AUTH_HEADER}"
 fi
 
 # Create Edge Functions
@@ -1000,7 +1086,7 @@ ERRORPAGE
 echo -e "${YELLOW}Creating webroot directory for SSL certificate...${NC}"
 mkdir -p "/var/www/$DOMAIN/.well-known/acme-challenge"
 
-# Nginx initial setup for certbot webroot
+# Nginx initial setup for certbot webroot - minimal config for SSL cert only
 echo -e "${YELLOW}Setting up Nginx for SSL certificate generation...${NC}"
 
 cat > "/etc/nginx/sites-available/$DOMAIN" << NGINX
@@ -1098,7 +1184,8 @@ server {
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
     
-    client_max_body_size 100M;
+    # Support 10GB uploads
+    client_max_body_size 11G;
     
     # Error handling
     proxy_intercept_errors on;
@@ -1110,6 +1197,7 @@ server {
     
     # Realtime WebSocket - needs long timeouts
     location ~ ^/realtime/v1 {
+        client_max_body_size 11G;
         proxy_pass http://localhost:8000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -1118,6 +1206,7 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Port 443;
         
         proxy_buffering off;
         proxy_cache off;
@@ -1131,12 +1220,14 @@ server {
     
     # Public n8n-proxy endpoint with 5-minute timeout
     location = /functions/v1/n8n-proxy {
+        client_max_body_size 11G;
         proxy_pass http://localhost:8000;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Port 443;
         
         proxy_request_buffering off;
         client_body_buffer_size 1M;
@@ -1150,12 +1241,14 @@ server {
     
     # Edge Functions - 5-minute timeouts
     location ~ ^/functions/v1 {
+        client_max_body_size 11G;
         proxy_pass http://localhost:8000;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Port 443;
         
         proxy_request_buffering off;
         client_body_buffer_size 1M;
@@ -1167,31 +1260,39 @@ server {
         limit_req zone=functions burst=100 nodelay;
     }
     
-    # Storage - longer timeouts for file uploads
+    # Storage - longer timeouts for 10GB file uploads
     location ~ ^/storage/v1 {
+        client_max_body_size 11G;
         proxy_pass http://localhost:8000;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Port 443;
         
-        proxy_read_timeout 600s;
-        proxy_send_timeout 600s;
+        # Extended timeouts for large uploads
+        proxy_read_timeout 7200s;
+        proxy_send_timeout 7200s;
         proxy_connect_timeout 10s;
-        client_max_body_size 5G;
+        
+        # Disable buffering for TUS uploads
+        proxy_request_buffering off;
+        proxy_buffering off;
         
         limit_req zone=api burst=20 nodelay;
     }
     
     # Everything else - standard timeouts
     location / {
+        client_max_body_size 11G;
         proxy_pass http://localhost:8000;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Port 443;
         
         # Conditional WebSocket support
         proxy_set_header Upgrade $http_upgrade;
@@ -1210,11 +1311,14 @@ NGINX
 sed -i "s|DOMAIN_PLACEHOLDER|$DOMAIN|g" "/etc/nginx/sites-available/$DOMAIN"
 systemctl reload nginx
 
-# Start Docker containers
+# Start Docker containers - Export DOMAIN to avoid warnings
 echo -e "${GREEN}🐳 Starting Docker Containers${NC}"
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 echo -e "${GREEN}Starting all Supabase services...${NC}"
+
+# Export DOMAIN variable to avoid warnings
+export DOMAIN="$DOMAIN"
 
 # Use docker compose v2 if available, otherwise docker-compose
 if docker compose version &> /dev/null 2>&1; then
@@ -1270,6 +1374,34 @@ else
     echo -e "${YELLOW}⚠ Warning: Could not create function_logs table. This may affect rate limiting for Edge Functions.${NC}"
     echo -e "${YELLOW}  You can create it manually later by running:${NC}"
     echo "  docker exec supabase-db psql -U postgres -d postgres -c 'CREATE TABLE ...'"
+fi
+
+# Verify critical configurations
+echo ""
+echo -e "${YELLOW}Verifying installation configuration...${NC}"
+
+# Check Nginx configuration
+NGINX_SIZE=$(grep -h "client_max_body_size" /etc/nginx/sites-available/$DOMAIN | head -1 | awk '{print $2}')
+if [[ $NGINX_SIZE == *"11G"* ]]; then
+    echo -e "${GREEN}✔ Nginx configured for 11GB uploads${NC}"
+else
+    echo -e "${RED}✗ Nginx client_max_body_size is $NGINX_SIZE (expected 11G)${NC}"
+fi
+
+# Verify Storage container configuration
+STORAGE_LIMIT=$(docker exec supabase-storage printenv UPLOAD_FILE_SIZE_LIMIT 2>/dev/null)
+if [ "$STORAGE_LIMIT" = "10737418240" ]; then
+    echo -e "${GREEN}✔ Storage container configured for 10GB uploads${NC}"
+else
+    echo -e "${RED}✗ Storage upload limit not set correctly (got: $STORAGE_LIMIT)${NC}"
+fi
+
+# Verify Kong container configuration
+KONG_BODY_SIZE=$(docker exec supabase-kong printenv KONG_NGINX_HTTP_CLIENT_MAX_BODY_SIZE 2>/dev/null)
+if [[ $KONG_BODY_SIZE == *"11000m"* ]]; then
+    echo -e "${GREEN}✔ Kong container configured for 11GB requests${NC}"
+else
+    echo -e "${YELLOW}⚠ Kong max body size may not be configured correctly${NC}"
 fi
 
 # Create DB hardening script
@@ -1363,7 +1495,7 @@ chmod +x /root/harden_supabase_db.sh
 # Save credentials with restricted permissions
 cat > /root/supabase-credentials.txt << CREDS
 ========================================
-SUPABASE INSTALLATION COMPLETE
+SUPABASE INSTALLATION COMPLETE v3.11
 ========================================
 
 Main URL: https://$DOMAIN
@@ -1395,6 +1527,32 @@ WebSocket Test:
  ws.onopen = () => console.log('Realtime connected!');
 
 ========================================
+10GB FILE UPLOAD SUPPORT
+========================================
+
+✅ System configured for 10GB file uploads via API/SDK
+✅ TUS resumable uploads supported for reliability
+✅ Standard uploads support up to 1GB
+
+JavaScript SDK Example (resumable upload):
+ const { data, error } = await supabase.storage
+   .from('bucket-name')
+   .upload('file.zip', file, {
+     cacheControl: '3600',
+     upsert: false
+   })
+
+CURL Example (TUS resumable):
+ # Initial POST request creates upload session
+ curl -X POST https://$DOMAIN/storage/v1/upload/resumable \\
+   -H "Authorization: Bearer YOUR_TOKEN" \\
+   -H "Upload-Length: FILE_SIZE_IN_BYTES" \\
+   -H "Tus-Resumable: 1.0.0"
+
+Note: Supabase Studio UI file upload is limited to 6MB
+(architectural limitation of self-hosted version)
+
+========================================
 POST-INSTALL SECURITY SCRIPT
 ========================================
 
@@ -1405,7 +1563,7 @@ To restrict access to specific IP addresses, run:
 
 This script will:
 - Configure Docker/UFW compatibility
-- Restrict port 5432 to your trusted IPs only (does not work with the IP of the same server where Supabase is deployed)
+- Restrict port 5432 to your trusted IPs only
 - Show you how to manage access rules
 
 ========================================
@@ -1447,6 +1605,12 @@ PERFORMANCE OPTIMIZATIONS APPLIED
    - Keeps only 7 days of compressed logs
    - Prevents disk space issues
 
+5. 10GB File Upload Support:
+   - Storage service configured for 10GB TUS uploads
+   - Kong and Nginx configured for 11GB request bodies
+   - Extended timeouts (2 hours) for slow connections
+   - TUS resumable uploads for reliability
+
 ========================================
 NOTE: ANALYTICS CONTAINER LOGS
 ========================================
@@ -1480,6 +1644,10 @@ du -sh /var/lib/docker/containers/*/*-json.log | sort -h
 # Force log rotation:
 logrotate -f /etc/logrotate.d/docker-containers
 
+# Test 10GB upload support:
+curl -I https://$DOMAIN/storage/v1/upload/resumable \\
+  -H "Authorization: Bearer $ANON_KEY"
+
 ========================================
 CREDS
 
@@ -1498,6 +1666,7 @@ echo -e "${GREEN}✔ Analytics optimized - memory reduced by 65%${NC}"
 echo -e "${GREEN}✔ Edge Functions DNS fix applied - stable after restarts${NC}"
 echo -e "${GREEN}✔ Kong timeout fix applied - supports 5-minute requests${NC}"
 echo -e "${GREEN}✔ Log rotation configured - prevents disk space issues${NC}"
+echo -e "${GREEN}✔ 10GB file upload support enabled via API/SDK${NC}"
 echo ""
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${YELLOW}                     📋 NEXT STEPS${NC}"
@@ -1515,6 +1684,10 @@ echo ""
 echo -e "${GREEN}4. 🔧 Configure webhooks if using Edge Functions:${NC}"
 echo "   nano /opt/supabase-project/.env"
 echo "   (Add N8N_WEBHOOK_URL and restart containers)"
+echo ""
+echo -e "${GREEN}5. 📦 Test 10GB upload support:${NC}"
+echo "   Use Supabase JavaScript SDK or API endpoints"
+echo "   Note: Studio UI limited to 6MB (use SDK for large files)"
 echo ""
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
