@@ -1629,11 +1629,11 @@ QUICK COMMANDS
 
 # Restart only functions (faster):
 cd /opt/supabase-project
-docker-compose restart functions
+docker compose restart functions
 
 # Full restart (if functions don't update):
 cd /opt/supabase-project
-docker-compose down && docker-compose up -d
+docker compose down && docker compose up -d
 
 # Check logs:
 docker logs supabase-edge-functions --tail 50
