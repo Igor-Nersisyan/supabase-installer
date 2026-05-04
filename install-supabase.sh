@@ -1,6 +1,15 @@
 #!/bin/bash
-# Supabase Self-Hosted Production Installer v3.25 - Complete Edition with 10GB Upload Support
+# Supabase Self-Hosted Production Installer v3.26 - Complete Edition with 10GB Upload Support
 # Features: Complete Docker configuration, latest Supabase version, log rotation, 10GB uploads
+# v3.26: Removed `ufw` from package install list. On Ubuntu 24.04 ufw declares
+#        Breaks: iptables-persistent, netfilter-persistent — apt cannot install both
+#        in one transaction. Stock 24.04 has ufw preinstalled (loop skipped it, only
+#        iptables-persistent went into apt → apt removed ufw to satisfy Breaks → fine),
+#        but cloud provisioners that strip ufw before this script runs (Beget/deploybox)
+#        caused `apt install ufw iptables-persistent` to fail with "broken packages".
+#        ufw rules wouldn't survive iptables-persistent install on the working path either,
+#        so removing ufw from the list is a clean no-op behaviorally. Host firewall is
+#        managed by Docker iptables + harden_supabase_db.sh.
 # v3.25: Fixed Kong timeout injection - replaced PyYAML (corrupted kong.yml) with pure sed
 # v3.24: Added --deploy-hook to initial certbot certonly (saved to renewal conf for systemd timer)
 # v3.23: Added certbot renewal cron job with nginx reload deploy-hook for SSL auto-renewal
@@ -49,7 +58,7 @@ cat << 'HEADER'
    ╚══════╝ ╚═════╝ ╚═╝     ╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝╚══════╝╚══════╝
 HEADER
 
-echo -e "${GREEN}                   Self-Hosted Installer v3.25${NC}"
+echo -e "${GREEN}                   Self-Hosted Installer v3.26${NC}"
 echo -e "${GREEN}        Production Edition with 10GB File Upload Support${NC}"
 echo -e "${YELLOW}        Using latest stable Supabase versions${NC}"
 echo ""
@@ -138,11 +147,15 @@ else
 fi
 
 # Install other required packages (including logrotate)
+# v3.26: `ufw` removed from this list. On Ubuntu 24.04 ufw declares
+# Breaks: iptables-persistent, netfilter-persistent, so apt refuses to install
+# both in one transaction. ufw was dead code on the working path anyway —
+# iptables-persistent installation removes ufw to satisfy the Breaks directive.
 echo -e "${GREEN}Checking other dependencies...${NC}"
 PACKAGES_TO_INSTALL=""
 
 # Check each package and add to install list if not present
-for pkg in git nginx certbot python3-certbot-nginx wget curl nano ufw python3-yaml jq logrotate iptables-persistent; do
+for pkg in git nginx certbot python3-certbot-nginx wget curl nano python3-yaml jq logrotate iptables-persistent; do
     if ! dpkg -l | grep -q "^ii  $pkg "; then
         PACKAGES_TO_INSTALL="$PACKAGES_TO_INSTALL $pkg"
     else
@@ -249,6 +262,9 @@ else
 fi
 
 # Configure firewall
+# v3.26: ufw is no longer installed by this script. Block below skips automatically
+# via `command -v ufw`. Host firewall is managed by Docker iptables rules and
+# the harden_supabase_db.sh script generated below.
 echo -e "${GREEN}🔥 Firewall Configuration${NC}"
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
@@ -273,7 +289,8 @@ if command -v ufw &> /dev/null; then
        echo -e "${GREEN}✔ Firewall already active${NC}"
    fi
 else
-   echo -e "${YELLOW}⚠ UFW not installed, skipping firewall configuration${NC}"
+   echo -e "${GREEN}✔ UFW not installed — host firewall handled by Docker iptables.${NC}"
+   echo -e "${GREEN}  Run /root/harden_supabase_db.sh after install to lock down PostgreSQL.${NC}"
 fi
 
 echo ""
@@ -2070,7 +2087,7 @@ chmod +x /root/harden_supabase_db.sh
 # Save credentials with restricted permissions
 cat > /root/supabase-credentials.txt << CREDS
 ========================================
-SUPABASE INSTALLATION COMPLETE v3.25
+SUPABASE INSTALLATION COMPLETE v3.26
 ========================================
 
 Main URL: https://$DOMAIN
@@ -2327,6 +2344,11 @@ PERFORMANCE OPTIMIZATIONS APPLIED
    - Cron job as fallback with nginx reload deploy-hook
    - Logs to /var/log/certbot-renew.log
 
+10. ufw vs iptables-persistent fix (v3.26):
+    - Removed ufw from package install list to avoid apt Breaks conflict
+    - Cloud provisioners that strip ufw before script runs no longer cause failure
+    - Host firewall managed by Docker iptables + harden_supabase_db.sh
+
 ========================================
 QUICK COMMANDS
 ========================================
@@ -2406,6 +2428,7 @@ echo -e "${GREEN}✔ Google OAuth ready to configure (v3.19)${NC}"
 echo -e "${GREEN}✔ Protected webhooks with streaming support (v3.21)${NC}"
 echo -e "${GREEN}✔ Database hardening script v3.3 installed${NC}"
 echo -e "${GREEN}✔ SSL auto-renewal configured with nginx reload (v3.24)${NC}"
+echo -e "${GREEN}✔ ufw/iptables-persistent apt-conflict fixed (v3.26)${NC}"
 echo ""
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${YELLOW}                     📋 NEXT STEPS${NC}"
