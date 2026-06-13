@@ -1,6 +1,19 @@
 #!/bin/bash
-# Supabase Self-Hosted Production Installer v3.26 - Complete Edition with 10GB Upload Support
+# Supabase Self-Hosted Production Installer v3.27 - Complete Edition with 10GB Upload Support
 # Features: Complete Docker configuration, latest Supabase version, log rotation, 10GB uploads
+# v3.27: Fixed HTTP/2 upload throttling - removed `http2` from listen 443.
+#        http2 + proxy_request_buffering off limits request bodies to the
+#        initial h2 flow-control window (~64KB) per RTT => ~0.3 MB/s real-world
+#        uploads. Browsers always negotiate h2 via ALPN, so Storage/TUS/any app
+#        behind this nginx uploaded slowly. `listen 443 ssl` keeps unbuffered
+#        streaming (no 10GB disk spool) and is forward-compatible: nginx >=1.25.1
+#        deprecates the listen parameter and defaults h2 to off.
+#        Also in v3.27: daily pg_dump backups with retention
+#        (/root/backup_supabase_db.sh, cron 3:30 AM, keeps 7 days, directory
+#        outside /opt/supabase-project so it survives installer re-runs);
+#        fixed n8n credentials user -> postgres.postgres (host port 5432 goes
+#        through supavisor, tenant suffix required); fixed email template
+#        verification (was checking nonexistent _SUBJECT variable).
 # v3.26: Removed `ufw` from package install list. On Ubuntu 24.04 ufw declares
 #        Breaks: iptables-persistent, netfilter-persistent — apt cannot install both
 #        in one transaction. Stock 24.04 has ufw preinstalled (loop skipped it, only
@@ -58,7 +71,7 @@ cat << 'HEADER'
    ╚══════╝ ╚═════╝ ╚═╝     ╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝╚══════╝╚══════╝
 HEADER
 
-echo -e "${GREEN}                   Self-Hosted Installer v3.26${NC}"
+echo -e "${GREEN}                   Self-Hosted Installer v3.27${NC}"
 echo -e "${GREEN}        Production Edition with 10GB File Upload Support${NC}"
 echo -e "${YELLOW}        Using latest stable Supabase versions${NC}"
 echo ""
@@ -1399,7 +1412,7 @@ server {
 }
 
 server {
-    listen 443 ssl http2;
+    listen 443 ssl;
     server_name DOMAIN_PLACEHOLDER;
     
     ssl_certificate /etc/letsencrypt/live/DOMAIN_PLACEHOLDER/fullchain.pem;
@@ -1728,8 +1741,8 @@ fi
 
 # Verify Email Templates configuration (v3.16)
 echo -e "${YELLOW}Verifying Email Templates configuration...${NC}"
-AUTH_CONFIRMATION_SUBJECT=$(docker exec supabase-auth printenv GOTRUE_MAILER_TEMPLATES_CONFIRMATION_SUBJECT 2>/dev/null || true)
-if [ ! -z "$AUTH_CONFIRMATION_SUBJECT" ]; then
+AUTH_CONFIRMATION_TEMPLATE=$(docker exec supabase-auth printenv GOTRUE_MAILER_TEMPLATES_CONFIRMATION 2>/dev/null || true)
+if [ ! -z "$AUTH_CONFIRMATION_TEMPLATE" ]; then
     echo -e "${GREEN}✔ Email templates configured in Auth service${NC}"
 else
     echo -e "${YELLOW}⚠ Email templates may not be configured (restart may be needed)${NC}"
@@ -1750,6 +1763,67 @@ rm -f "$CRON_TEMP"
 
 echo -e "${GREEN}✔ Cron job configured: SSL renewal check daily at 2 AM${NC}"
 echo -e "${GREEN}  Nginx will automatically reload after certificate renewal${NC}"
+echo ""
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+
+# v3.27: Configure daily database backups with retention
+echo -e "${GREEN}💾 Configuring Daily Database Backups${NC}"
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+
+cat > /root/backup_supabase_db.sh << 'BACKUP_SCRIPT'
+#!/bin/bash
+# Supabase Database Backup (installed by install-supabase.sh v3.27)
+# Daily pg_dump of the postgres database; deletes dumps older than KEEP_DAYS.
+# NOTE: uploaded Storage files are NOT in the dump - they live in
+# /opt/supabase-project/volumes/storage (copy/rsync separately if needed).
+set -euo pipefail
+
+BACKUP_DIR="/var/backups/supabase"
+KEEP_DAYS=7
+
+mkdir -p "$BACKUP_DIR"
+find "$BACKUP_DIR" -name "*.tmp" -delete
+
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+BACKUP_FILE="$BACKUP_DIR/postgres_${TIMESTAMP}.sql.gz"
+
+docker exec supabase-db pg_dump -U postgres -d postgres --clean --if-exists | gzip > "${BACKUP_FILE}.tmp"
+
+# A healthy dump is never tiny - catch silent empty dumps
+if [ "$(stat -c%s "${BACKUP_FILE}.tmp")" -lt 1024 ]; then
+    rm -f "${BACKUP_FILE}.tmp"
+    echo "[$(date '+%F %T')] ERROR: dump is empty, backup NOT saved" >&2
+    exit 1
+fi
+
+mv "${BACKUP_FILE}.tmp" "$BACKUP_FILE"
+find "$BACKUP_DIR" -name "postgres_*.sql.gz" -mtime +"$KEEP_DAYS" -delete
+
+echo "[$(date '+%F %T')] OK: $BACKUP_FILE ($(du -h "$BACKUP_FILE" | cut -f1)), retention: ${KEEP_DAYS} days"
+BACKUP_SCRIPT
+
+chmod +x /root/backup_supabase_db.sh
+
+CRON_BACKUP_JOB="30 3 * * * /root/backup_supabase_db.sh >> /var/log/supabase-backup.log 2>&1"
+
+CRON_TEMP=$(mktemp /tmp/cron.XXXXXX)
+(crontab -l 2>/dev/null | grep -v "backup_supabase_db") > "$CRON_TEMP" || true
+echo "$CRON_BACKUP_JOB" >> "$CRON_TEMP"
+crontab "$CRON_TEMP"
+rm -f "$CRON_TEMP"
+
+echo -e "${GREEN}✔ Backup script installed: /root/backup_supabase_db.sh${NC}"
+echo -e "${GREEN}✔ Cron job configured: daily backup at 3:30 AM, last 7 days kept${NC}"
+echo -e "${GREEN}  Backups: /var/backups/supabase | Log: /var/log/supabase-backup.log${NC}"
+
+# Run the first backup now to verify the pipeline works
+if /root/backup_supabase_db.sh >> /var/log/supabase-backup.log 2>&1; then
+    echo -e "${GREEN}✔ Initial backup created successfully${NC}"
+else
+    echo -e "${YELLOW}⚠ Initial backup failed - check /var/log/supabase-backup.log${NC}"
+fi
 echo ""
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
@@ -2087,7 +2161,7 @@ chmod +x /root/harden_supabase_db.sh
 # Save credentials with restricted permissions
 cat > /root/supabase-credentials.txt << CREDS
 ========================================
-SUPABASE INSTALLATION COMPLETE v3.26
+SUPABASE INSTALLATION COMPLETE v3.27
 ========================================
 
 Main URL: https://$DOMAIN
@@ -2218,6 +2292,30 @@ Manual renewal: certbot renew --force-renewal
 Check logs: cat /var/log/certbot-renew.log
 
 ========================================
+DATABASE BACKUPS (v3.27)
+========================================
+
+Daily pg_dump of the postgres database at 3:30 AM:
+  Directory: /var/backups/supabase/postgres_YYYYMMDD_HHMMSS.sql.gz
+  Retention: backups older than 7 days are deleted automatically
+  Change retention: edit KEEP_DAYS in /root/backup_supabase_db.sh
+  Log: /var/log/supabase-backup.log
+
+Run a backup now:
+  /root/backup_supabase_db.sh
+
+Restore from backup (OVERWRITES current data):
+  cd /opt/supabase-project
+  docker compose stop
+  docker compose start db
+  gunzip -c /var/backups/supabase/postgres_FILE.sql.gz | docker exec -i supabase-db psql -U postgres -d postgres
+  docker compose up -d
+
+NOTE: uploaded Storage files are NOT in the dump - they live in
+/opt/supabase-project/volumes/storage. Copy that directory separately
+if you need file backups.
+
+========================================
 DATABASE HARDENING v3.3
 ========================================
 
@@ -2244,7 +2342,7 @@ Same Server Setup:
      Host: host.docker.internal
      Port: 5432
      Database: postgres
-     User: postgres
+     User: postgres.postgres
      Password: $POSTGRES_PASSWORD
      SSL: Disable
 
@@ -2255,7 +2353,7 @@ Different Server Setup:
      Host: <this server's IP>
      Port: 5432
      Database: postgres
-     User: postgres
+     User: postgres.postgres
      Password: $POSTGRES_PASSWORD
      SSL: Disable
 
@@ -2429,6 +2527,8 @@ echo -e "${GREEN}✔ Protected webhooks with streaming support (v3.21)${NC}"
 echo -e "${GREEN}✔ Database hardening script v3.3 installed${NC}"
 echo -e "${GREEN}✔ SSL auto-renewal configured with nginx reload (v3.24)${NC}"
 echo -e "${GREEN}✔ ufw/iptables-persistent apt-conflict fixed (v3.26)${NC}"
+echo -e "${GREEN}✔ HTTP/2 upload throttling fixed - h2 removed from nginx listen (v3.27)${NC}"
+echo -e "${GREEN}✔ Daily database backups with 7-day retention (v3.27)${NC}"
 echo ""
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${YELLOW}                     📋 NEXT STEPS${NC}"
